@@ -49,12 +49,12 @@ class NewsRepository(
         val auth = "GoogleLogin auth=${acc.authKey}"
 
         onProgress("Feeds laden …")
-        val subs = api.subscriptions(auth).subscriptions
+        val subs = api.subscriptions(auth).subscriptions.orEmpty()
         val feeds = subs.map { s ->
             FeedEntity(
                 id = s.id,
-                title = s.title.ifBlank { s.url ?: s.id },
-                category = s.categories.firstOrNull()?.label?.takeIf { it.isNotBlank() } ?: "Alle",
+                title = (s.title ?: s.url ?: s.id).ifBlank { s.id },
+                category = s.categories.orEmpty().firstOrNull()?.label?.takeIf { it.isNotBlank() } ?: "Alle",
                 htmlUrl = s.htmlUrl,
                 iconUrl = s.iconUrl,
             )
@@ -64,7 +64,7 @@ class NewsRepository(
 
         onProgress("Artikel-Liste laden …")
         val token = api.requestToken(auth).string().trim()
-        val ids = api.unreadItemIds(auth).itemRefs.map { it.id }
+        val ids = api.unreadItemIds(auth).itemRefs.orEmpty().map { it.id }
         if (ids.isEmpty()) {
             db.articleDao().deleteNotIn(emptyList())
             onProgress("Alles gelesen ✓")
@@ -75,16 +75,17 @@ class NewsRepository(
         val entities = mutableListOf<ArticleEntity>()
         ids.chunked(50).forEachIndexed { index, batch ->
             val contents = api.itemContents(auth, batch, token)
-            contents.items.forEach { item ->
+            contents.items.orEmpty().forEach { item ->
+                val id = item.id ?: return@forEach // defektes Item überspringen
                 val summaryHtml = item.summary?.content ?: ""
                 entities += ArticleEntity(
                     // items/ids liefert Kurz-IDs (Dezimal), contents Lang-IDs (tag:.../item/<hex>).
                     // Wir normalisieren auf die Kurz-Form, damit deleteNotIn() die Artikel nicht wieder löscht.
-                    id = normalizeItemId(item.id),
+                    id = normalizeItemId(id),
                     feedId = item.origin?.streamId ?: "",
                     feedTitle = item.origin?.title ?: "",
-                    title = item.title.ifBlank { "(ohne Titel)" },
-                    url = item.canonical.firstOrNull()?.href ?: item.origin?.htmlUrl ?: "",
+                    title = (item.title ?: "").ifBlank { "(ohne Titel)" },
+                    url = item.canonical.orEmpty().firstOrNull()?.href ?: item.origin?.htmlUrl ?: "",
                     author = item.author,
                     published = item.published,
                     summaryHtml = summaryHtml,
@@ -133,7 +134,7 @@ class NewsRepository(
 
         /** Bild-URL: erst Enclosure mit Bild-Typ, sonst erstes img-src aus dem Inhalt. */
         private fun extractImageUrl(item: com.wavenews.app.data.api.StreamItem, summaryHtml: String): String? {
-            item.enclosure.firstOrNull { it.type?.startsWith("image/") == true && it.href.isNotBlank() }
+            item.enclosure.orEmpty().firstOrNull { it.type?.startsWith("image/") == true && !it.href.isNullOrBlank() }
                 ?.let { return it.href }
             val match = IMG_SRC_REGEX.find(summaryHtml) ?: return null
             val src = match.groupValues[1]

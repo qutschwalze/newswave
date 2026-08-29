@@ -13,40 +13,43 @@ import retrofit2.http.POST
 import retrofit2.http.Query
 
 // --- DTOs (Google-Reader-Protokoll, wie FreshRSS es implementiert) ---
+// WICHTIG: Gson instanziiert diese Klassen ohne Konstruktor (Unsafe) — fehlende
+// JSON-Felder sind daher NULL, auch wenn Kotlin nicht-null deklariert. Deshalb
+// sind alle Sammlungen bewusst nullable und werden an der Verwendung mit orEmpty() gehärtet.
 
 data class Category(val id: String = "", val label: String = "")
 
 data class Subscription(
-    val id: String,
-    val title: String = "",
-    val categories: List<Category> = emptyList(),
+    val id: String = "",
+    val title: String? = null,
+    val categories: List<Category>? = null,
     val url: String? = null,
     val htmlUrl: String? = null,
     val iconUrl: String? = null,
 )
 
-data class SubscriptionList(val subscriptions: List<Subscription> = emptyList())
+data class SubscriptionList(val subscriptions: List<Subscription>? = null)
 
-data class ItemRef(val id: String)
-data class ItemIdList(val itemRefs: List<ItemRef> = emptyList())
+data class ItemRef(val id: String = "")
+data class ItemIdList(val itemRefs: List<ItemRef>? = null)
 
-data class Canonical(val href: String = "")
+data class Canonical(val href: String? = null)
 data class Summary(val content: String? = null)
-data class Enclosure(val href: String = "", val type: String? = null, val length: Long = 0)
-data class Origin(val streamId: String = "", val title: String = "", val htmlUrl: String? = null)
+data class Enclosure(val href: String? = null, val type: String? = null, val length: Long = 0)
+data class Origin(val streamId: String? = null, val title: String? = null, val htmlUrl: String? = null)
 
 data class StreamItem(
-    val id: String,
-    val title: String = "",
+    val id: String? = null,
+    val title: String? = null,
     val published: Long = 0,
     val author: String? = null,
-    val canonical: List<Canonical> = emptyList(),
+    val canonical: List<Canonical>? = null,
     val summary: Summary? = null,
-    val enclosure: List<Enclosure> = emptyList(),
+    val enclosure: List<Enclosure>? = null,
     val origin: Origin? = null,
 )
 
-data class ContentList(val id: String = "", val items: List<StreamItem> = emptyList())
+data class ContentList(val id: String? = null, val items: List<StreamItem>? = null)
 
 // --- API ---
 
