@@ -76,6 +76,7 @@ class NewsRepository(
         ids.chunked(50).forEachIndexed { index, batch ->
             val contents = api.itemContents(auth, batch, token)
             contents.items.forEach { item ->
+                val summaryHtml = item.summary?.content ?: ""
                 entities += ArticleEntity(
                     // items/ids liefert Kurz-IDs (Dezimal), contents Lang-IDs (tag:.../item/<hex>).
                     // Wir normalisieren auf die Kurz-Form, damit deleteNotIn() die Artikel nicht wieder löscht.
@@ -86,7 +87,8 @@ class NewsRepository(
                     url = item.canonical.firstOrNull()?.href ?: item.origin?.htmlUrl ?: "",
                     author = item.author,
                     published = item.published,
-                    summaryHtml = item.summary?.content ?: "",
+                    summaryHtml = summaryHtml,
+                    imageUrl = extractImageUrl(item, summaryHtml),
                     unread = true,
                     starred = false,
                 )
@@ -128,6 +130,17 @@ class NewsRepository(
     private companion object {
         const val TAG_READ = "user/-/state/com.google/read"
         const val TAG_STARRED = "user/-/state/com.google/starred"
+
+        /** Bild-URL: erst Enclosure mit Bild-Typ, sonst erstes img-src aus dem Inhalt. */
+        private fun extractImageUrl(item: com.wavenews.app.data.api.StreamItem, summaryHtml: String): String? {
+            item.enclosure.firstOrNull { it.type?.startsWith("image/") == true && it.href.isNotBlank() }
+                ?.let { return it.href }
+            val match = IMG_SRC_REGEX.find(summaryHtml) ?: return null
+            val src = match.groupValues[1]
+            return src.takeIf { it.startsWith("http") }
+        }
+
+        private val IMG_SRC_REGEX = Regex("""<img[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 
         /**
          * "tag:google.com,2005:reader/item/00065a348e0b36dd" → "1788031628162781"

@@ -6,11 +6,13 @@ import android.net.Uri
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -48,17 +51,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.wavenews.app.R
 import com.wavenews.app.WaveNewsApp
 import com.wavenews.app.data.Account
@@ -453,6 +460,7 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun ArticleWebView(html: String, baseUrl: String, modifier: Modifier = Modifier) {
+    val isDark = isSystemInDarkTheme()
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -467,7 +475,7 @@ private fun ArticleWebView(html: String, baseUrl: String, modifier: Modifier = M
         update = { webView ->
             webView.loadDataWithBaseURL(
                 baseUrl.takeIf { it.isNotBlank() },
-                wrapArticleHtml(html),
+                wrapArticleHtml(html, isDark),
                 "text/html",
                 "utf-8",
                 null,
@@ -476,7 +484,11 @@ private fun ArticleWebView(html: String, baseUrl: String, modifier: Modifier = M
     )
 }
 
-private fun wrapArticleHtml(contentHtml: String): String = """
+private fun wrapArticleHtml(contentHtml: String, isDark: Boolean): String {
+    val textColor = if (isDark) "#E5E1E6" else "#1A1A1A"
+    val bgColor = if (isDark) "#15151A" else "#FEFBFF"
+    val linkColor = if (isDark) "#9FA8DA" else "#3949AB"
+    return """
     <!DOCTYPE html>
     <html>
     <head>
@@ -484,21 +496,25 @@ private fun wrapArticleHtml(contentHtml: String): String = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
       body { font-family: sans-serif; font-size: 16px; line-height: 1.55;
-             color: #1a1a1a; margin: 0; padding: 12px 16px; }
+             color: $textColor; background: $bgColor; margin: 0; padding: 12px 16px; }
       img { max-width: 100%; height: auto; }
-      a { color: #3949AB; }
+      a { color: $linkColor; }
     </style>
     </head>
     <body>$contentHtml</body>
     </html>
 """.trimIndent()
+}
 
 @Composable
 private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel) {
-    val context = LocalContext.current
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         items(articles, key = { it.id }) { article ->
-            ArticleRow(
+            ArticleCard(
                 article,
                 onClick = { vm.openArticle(article) },
                 onStar = { vm.toggleStar(article) },
@@ -507,36 +523,56 @@ private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel) {
     }
 }
 
-@Composable
-private fun ArticleRow(article: ArticleEntity, onClick: () -> Unit, onStar: () -> Unit) {
-    val date = remember(article.published) {
-        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(article.published * 1000))
+/** Relative Zeit wie "5 Min.", "2 Std.", "3 Tage" — sonst Datum. */
+private fun relativeTime(publishedSeconds: Long): String {
+    val diff = System.currentTimeMillis() / 1000 - publishedSeconds
+    return when {
+        diff < 90 -> "gerade eben"
+        diff < 3600 -> "${diff / 60} Min."
+        diff < 86_400 -> "${diff / 3600} Std."
+        diff < 7 * 86_400 -> "${diff / 86_400} Tage"
+        else -> DateFormat.getDateInstance(DateFormat.SHORT).format(Date(publishedSeconds * 1000))
     }
-    ListItem(
-        headlineContent = {
-            Text(
-                article.title,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = if (article.unread) FontWeight.Bold else FontWeight.Normal,
-            )
-        },
-        supportingContent = {
-            Text(
-                "$date · ${article.feedTitle}",
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        },
-        trailingContent = {
-            Text(
-                if (article.starred) "★" else "☆",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.clickable(onClick = onStar),
-            )
-        },
-        modifier = Modifier.clickable(onClick = onClick),
-    )
+}
+
+/** Google-News-Style-Karte: großes Bild (falls vorhanden), Titel, Quelle · relative Zeit, Stern. */
+@Composable
+private fun ArticleCard(article: ArticleEntity, onClick: () -> Unit, onStar: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Column {
+            article.imageUrl?.let { url ->
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                )
+            }
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Text(
+                    article.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = if (article.unread) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${article.feedTitle} · ${relativeTime(article.published)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (article.starred) "★" else "☆",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.clickable(onClick = onStar),
+                    )
+                }
+            }
+        }
+    }
 }

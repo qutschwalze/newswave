@@ -13,8 +13,8 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -62,6 +62,9 @@ dependencies {
 
     // Hintergrund-Sync für Push-Notifications + Widget
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // Artikelbilder in der Übersicht
+    implementation("io.coil-kt:coil-compose:2.7.0")
 
     // Einstellungen (Server-URL, User, Token)
     implementation("androidx.datastore:datastore-preferences:1.1.1")

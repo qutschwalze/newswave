@@ -34,6 +34,7 @@ data class ArticleEntity(
     val author: String?,
     val published: Long, // Epoch-Sekunden
     val summaryHtml: String,
+    val imageUrl: String?, //Enclosure oder erstes Bild aus dem Inhalt
     val unread: Boolean,
     val starred: Boolean,
 )
@@ -97,7 +98,7 @@ interface ArticleDao {
     suspend fun clear()
 }
 
-@Database(entities = [FeedEntity::class, ArticleEntity::class], version = 1, exportSchema = false)
+@Database(entities = [FeedEntity::class, ArticleEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun feedDao(): FeedDao

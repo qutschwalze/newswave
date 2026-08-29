@@ -32,6 +32,7 @@ data class ItemIdList(val itemRefs: List<ItemRef> = emptyList())
 
 data class Canonical(val href: String = "")
 data class Summary(val content: String? = null)
+data class Enclosure(val href: String = "", val type: String? = null, val length: Long = 0)
 data class Origin(val streamId: String = "", val title: String = "", val htmlUrl: String? = null)
 
 data class StreamItem(
@@ -41,6 +42,7 @@ data class StreamItem(
     val author: String? = null,
     val canonical: List<Canonical> = emptyList(),
     val summary: Summary? = null,
+    val enclosure: List<Enclosure> = emptyList(),
     val origin: Origin? = null,
 )
 
