@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>wave-news feeds (Phase 1)</title>
+  </head>
+  <body>
+    <outline text="Nachrichten DE">
+      <outline type="rss" text="tagesschau" xmlUrl="https://www.tagesschau.de/xml/rss2/" htmlUrl="https://www.tagesschau.de"/>
+      <outline type="rss" text="ZDF Nachrichten" xmlUrl="https://www.zdf.de/rss/zdf/nachrichten" htmlUrl="https://www.zdf.de/nachrichten"/>
+      <outline type="rss" text="DIE ZEIT" xmlUrl="https://newsfeed.zeit.de/index" htmlUrl="https://www.zeit.de"/>
+    </outline>
+    <outline text="Tech DE">
+      <outline type="rss" text="heise top" xmlUrl="https://www.heise.de/rss/heise-top-atom.xml" htmlUrl="https://www.heise.de"/>
+      <outline type="rss" text="Golem" xmlUrl="https://rss.golem.de/rss.php?r=de&amp;feed=RSS2.0" htmlUrl="https://www.golem.de"/>
+    </outline>
+    <outline text="Tech EN">
+      <outline type="rss" text="Hacker News Frontpage" xmlUrl="https://hnrss.org/frontpage" htmlUrl="https://news.ycombinator.com"/>
+      <outline type="rss" text="Ars Technica" xmlUrl="https://feeds.arstechnica.com/arstechnica/index" htmlUrl="https://arstechnica.com"/>
+      <outline type="rss" text="The Verge" xmlUrl="https://www.theverge.com/rss/index.xml" htmlUrl="https://www.theverge.com"/>
+    </outline>
+    <outline text="Nachrichten EN">
+      <outline type="rss" text="BBC World" xmlUrl="http://feeds.bbci.co.uk/news/world/rss.xml" htmlUrl="https://www.bbc.com/news"/>
+    </outline>
+    <outline text="Selfhosted EN">
+      <outline type="rss" text="r/selfhosted" xmlUrl="https://www.reddit.com/r/selfhosted/.rss" htmlUrl="https://www.reddit.com/r/selfhosted/"/>
+    </outline>
+  </body>
+</opml>

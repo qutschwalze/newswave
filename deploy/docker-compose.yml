@@ -1,0 +1,21 @@
+# Wave News — Phase 1: FreshRSS Backend (läuft auf 172.16.120.218)
+# Erreichbar via Nginx Proxy Manager auf .137 → forward host 172.16.120.218:6876
+# Credentials liegen NICHT hier, sondern in /root/freshrss/.freshrss-credentials (auf .218)
+# und in /root/wave-news/.env (auf der Agent-VM, gitignored)
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+      CRON_MIN: "7,27" # Feed-Refresh 2x pro Stunde
+      FRESHRSS_ENV: production
+      # Passthrough: .env neben dieser Datei liefert FRESHRSS_INSTALL/FRESHRSS_USER (Auto-Install)
+      FRESHRSS_INSTALL: ${FRESHRSS_INSTALL}
+      FRESHRSS_USER: ${FRESHRSS_USER}
+    volumes:
+      - /root/freshrss/data:/var/www/FreshRSS/data
+      - /root/freshrss/extensions:/var/www/FreshRSS/extensions
+    ports:
+      - "172.16.120.218:6876:80" # für NPM-Proxy von .137 erreichbar
