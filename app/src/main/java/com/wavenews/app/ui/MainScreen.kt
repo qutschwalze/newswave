@@ -1,7 +1,10 @@
 package com.wavenews.app.ui
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,11 +17,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
@@ -33,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,10 +54,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wavenews.app.R
 import com.wavenews.app.WaveNewsApp
 import com.wavenews.app.data.Account
@@ -76,6 +84,8 @@ data class UiState(
     val error: String? = null,
     val filter: ReadFilter = ReadFilter.UNREAD,
     val selectedFeed: String? = null,
+    val selectedCategory: String? = null,
+    val openArticle: ArticleEntity? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -87,10 +97,14 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
     val feeds = app.repository.observeFeeds()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val categories = app.repository.observeCategories()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val articles: StateFlow<List<ArticleEntity>> = ui
         .flatMapLatest { s ->
             app.repository.observeArticles(
                 feedId = s.selectedFeed,
+                category = s.selectedCategory,
                 onlyUnread = s.filter == ReadFilter.UNREAD,
                 onlyStarred = s.filter == ReadFilter.STARRED,
             )
@@ -101,9 +115,28 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         viewModelScope.launch {
             app.settings.account.collect { ui.value = ui.value.copy(account = it) }
         }
+        // Deep-Link newswave://article/<id> → Detailansicht öffnen
+        viewModelScope.launch {
+            app.pendingArticleId.collect { id ->
+                if (id != null) {
+                    app.repository.article(id)?.let { article ->
+                        ui.value = ui.value.copy(openArticle = article)
+                    }
+                    app.pendingArticleId.value = null
+                }
+            }
+        }
         viewModelScope.launch {
             if (app.settings.accountOnce() != null) sync()
         }
+    }
+
+    fun openArticle(article: ArticleEntity) {
+        ui.value = ui.value.copy(openArticle = article)
+    }
+
+    fun closeArticle() {
+        ui.value = ui.value.copy(openArticle = null)
     }
 
     fun login(server: String, user: String, password: String) {
@@ -138,7 +171,11 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
     }
 
     fun selectFeed(feedId: String?) {
-        ui.value = ui.value.copy(selectedFeed = feedId)
+        ui.value = ui.value.copy(selectedFeed = feedId, selectedCategory = null)
+    }
+
+    fun selectCategory(category: String?) {
+        ui.value = ui.value.copy(selectedCategory = category, selectedFeed = null)
     }
 
     fun markRead(article: ArticleEntity, read: Boolean) {
@@ -182,7 +219,9 @@ fun MainScreen() {
     if (state.account == null) {
         LoginScreen(vm, state)
     } else {
-        NewsScreen(vm, state, articles)
+        state.openArticle?.let { article ->
+            ArticleDetailScreen(article, vm)
+        } ?: NewsScreen(vm, state, articles)
     }
 }
 
@@ -252,18 +291,27 @@ private fun NewsScreen(vm: MainViewModel, state: UiState, articles: List<Article
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val feeds by vm.feeds.collectAsState()
+    val categories by vm.categories.collectAsState()
     var showLogout by remember { mutableStateOf(false) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("Quellen", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                Text(stringResource(R.string.drawer_categories), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
                 NavigationDrawerItem(
-                    label = { Text("Alle Quellen") },
-                    selected = state.selectedFeed == null,
+                    label = { Text(stringResource(R.string.drawer_all)) },
+                    selected = state.selectedFeed == null && state.selectedCategory == null,
                     onClick = { vm.selectFeed(null); scope.launch { drawerState.close() } },
                 )
+                categories.forEach { category ->
+                    NavigationDrawerItem(
+                        label = { Text(category) },
+                        selected = state.selectedCategory == category,
+                        onClick = { vm.selectCategory(category); scope.launch { drawerState.close() } },
+                    )
+                }
+                Text(stringResource(R.string.drawer_feeds), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
                 feeds.forEach { feed ->
                     NavigationDrawerItem(
                         label = { Text(feed.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -277,7 +325,15 @@ private fun NewsScreen(vm: MainViewModel, state: UiState, articles: List<Article
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(stringResource(R.string.app_name)) },
+                    title = {
+                        Text(
+                            when {
+                                state.selectedFeed != null -> feeds.firstOrNull { it.id == state.selectedFeed }?.title ?: stringResource(R.string.app_name)
+                                state.selectedCategory != null -> state.selectedCategory
+                                else -> stringResource(R.string.app_name)
+                            }
+                        )
+                    },
                     actions = {
                         IconButton(onClick = { vm.sync() }, enabled = !state.loading) {
                             Text("⟳", style = MaterialTheme.typography.titleLarge)
@@ -330,6 +386,113 @@ private fun NewsScreen(vm: MainViewModel, state: UiState, articles: List<Article
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
+    val context = LocalContext.current
+    // Beim Öffnen: als gelesen markieren
+    LaunchedEffect(article.id) {
+        if (article.unread) vm.markRead(article, true)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(article.feedTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                navigationIcon = {
+                    IconButton(onClick = { vm.closeArticle() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Zurück")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { vm.toggleStar(article) }) {
+                        Text(
+                            if (article.starred) "★" else "☆",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
+                    IconButton(onClick = {
+                        article.url.takeIf { it.isNotBlank() }?.let {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
+                        }
+                    }) { Text("↗") }
+                },
+            )
+        },
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            Text(
+                article.title,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            Text(
+                (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            if (article.summaryHtml.isNotBlank()) {
+                ArticleWebView(
+                    html = article.summaryHtml,
+                    baseUrl = article.url,
+                    modifier = Modifier.fillMaxSize().padding(top = 8.dp),
+                )
+            } else if (article.url.isNotBlank()) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Kein Inhalt im Feed vorhanden.")
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(article.url)))
+                    }) { Text(stringResource(R.string.detail_fulltext)) }
+                }
+            }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun ArticleWebView(html: String, baseUrl: String, modifier: Modifier = Modifier) {
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            WebView(context).apply {
+                settings.javaScriptEnabled = false
+                settings.loadWithOverviewMode = true
+                settings.useWideViewPort = true
+                webViewClient = WebViewClient()
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+        },
+        update = { webView ->
+            webView.loadDataWithBaseURL(
+                baseUrl.takeIf { it.isNotBlank() },
+                wrapArticleHtml(html),
+                "text/html",
+                "utf-8",
+                null,
+            )
+        },
+    )
+}
+
+private fun wrapArticleHtml(contentHtml: String): String = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      body { font-family: sans-serif; font-size: 16px; line-height: 1.55;
+             color: #1a1a1a; margin: 0; padding: 12px 16px; }
+      img { max-width: 100%; height: auto; }
+      a { color: #3949AB; }
+    </style>
+    </head>
+    <body>$contentHtml</body>
+    </html>
+""".trimIndent()
+
 @Composable
 private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel) {
     val context = LocalContext.current
@@ -337,12 +500,7 @@ private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel) {
         items(articles, key = { it.id }) { article ->
             ArticleRow(
                 article,
-                onClick = {
-                    if (article.unread) vm.markRead(article, true)
-                    article.url.takeIf { it.isNotBlank() }?.let {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
-                    }
-                },
+                onClick = { vm.openArticle(article) },
                 onStar = { vm.toggleStar(article) },
             )
         }

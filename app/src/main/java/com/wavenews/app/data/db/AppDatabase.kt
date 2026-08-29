@@ -14,7 +14,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "feeds")
 data class FeedEntity(
-    @PrimaryKey val id: String, // streamId, z. B. "feed/https://..."
+    @PrimaryKey val id: String, // streamId, z. B. "feed/12"
     val title: String,
     val category: String,
     val htmlUrl: String?,
@@ -26,7 +26,7 @@ data class FeedEntity(
     indices = [Index("feedId"), Index("published")],
 )
 data class ArticleEntity(
-    @PrimaryKey val id: String, // Long-Form-Item-ID (tag:google.com,2005:reader/item/<hex>)
+    @PrimaryKey val id: String, // Kurz-Form-Item-ID (normalisiert, s. NewsRepository)
     val feedId: String,
     val feedTitle: String,
     val title: String,
@@ -44,6 +44,9 @@ interface FeedDao {
     @Query("SELECT * FROM feeds ORDER BY category, title")
     fun observeAll(): Flow<List<FeedEntity>>
 
+    @Query("SELECT DISTINCT category FROM feeds WHERE category != '' ORDER BY category")
+    fun observeCategories(): Flow<List<String>>
+
     @Query("DELETE FROM feeds")
     suspend fun clear()
 
@@ -57,12 +60,22 @@ interface ArticleDao {
     @Query(
         """SELECT * FROM articles
            WHERE (:feedId IS NULL OR feedId = :feedId)
+             AND (:category IS NULL OR feedId IN (SELECT id FROM feeds WHERE category = :category))
              AND (:onlyUnread = 0 OR unread = 1)
              AND (:onlyStarred = 0 OR starred = 1)
            ORDER BY published DESC
            LIMIT 500"""
     )
-    fun observeArticles(feedId: String?, onlyUnread: Boolean, onlyStarred: Boolean): Flow<List<ArticleEntity>>
+    fun observeArticles(feedId: String?, category: String?, onlyUnread: Boolean, onlyStarred: Boolean): Flow<List<ArticleEntity>>
+
+    @Query("SELECT * FROM articles WHERE unread = 1 ORDER BY published DESC LIMIT :n")
+    suspend fun latestUnread(n: Int): List<ArticleEntity>
+
+    @Query("SELECT * FROM articles WHERE id = :id")
+    suspend fun byId(id: String): ArticleEntity?
+
+    @Query("SELECT COUNT(*) FROM articles WHERE unread = 1")
+    suspend fun countUnread(): Int
 
     @Query("SELECT COUNT(*) FROM articles WHERE unread = 1")
     fun observeUnreadCount(): Flow<Int>

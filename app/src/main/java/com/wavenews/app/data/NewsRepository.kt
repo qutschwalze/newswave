@@ -28,8 +28,16 @@ class NewsRepository(
 
     fun observeFeeds() = db.feedDao().observeAll()
 
-    fun observeArticles(feedId: String?, onlyUnread: Boolean, onlyStarred: Boolean) =
-        db.articleDao().observeArticles(feedId, onlyUnread, onlyStarred)
+    fun observeCategories() = db.feedDao().observeCategories()
+
+    fun observeArticles(feedId: String?, category: String?, onlyUnread: Boolean, onlyStarred: Boolean) =
+        db.articleDao().observeArticles(feedId, category, onlyUnread, onlyStarred)
+
+    suspend fun unreadCount(): Int = db.articleDao().countUnread()
+
+    suspend fun latestUnread(n: Int): List<ArticleEntity> = db.articleDao().latestUnread(n)
+
+    suspend fun article(id: String): ArticleEntity? = db.articleDao().byId(id)
 
     private suspend fun account(): Account =
         requireNotNull(settings.accountOnce()) { "Nicht angemeldet" }

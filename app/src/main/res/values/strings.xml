@@ -13,4 +13,13 @@
     <string name="filter_unread">Ungelesen</string>
     <string name="filter_starred">Gemerkt</string>
     <string name="empty_state">Keine Artikel. Tippe auf Aktualisieren.</string>
+    <string name="drawer_all">Alle Quellen</string>
+    <string name="drawer_categories">Kategorien</string>
+    <string name="drawer_feeds">Feeds</string>
+    <string name="detail_fulltext">Volltext</string>
+    <string name="widget_header">News Wave</string>
+    <string name="widget_empty">Keine ungelesenen Artikel</string>
+    <string name="notif_channel_name">Neue Artikel</string>
+    <string name="notif_new_articles">%1$d neue Artikel</string>
+    <string name="notif_new_articles_text">Tippen, um News Wave zu öffnen</string>
 </resources>
