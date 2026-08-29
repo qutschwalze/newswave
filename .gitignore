@@ -1,0 +1,30 @@
+# Sensible Dateien — NIE committen
+.env
+.env.*
+*.keystore
+*.jks
+local.properties
+google-services.json
+*.apk
+*.aab
+
+# Build Outputs
+build/
+.gradle/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# FreshRSS Credentials
+freshrss-credentials.json
