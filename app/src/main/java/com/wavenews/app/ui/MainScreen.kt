@@ -277,7 +277,7 @@ private fun NewsScreen(vm: MainViewModel, state: UiState, articles: List<Article
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Wave News") },
+                    title = { Text(stringResource(R.string.app_name)) },
                     actions = {
                         IconButton(onClick = { vm.sync() }, enabled = !state.loading) {
                             Text("⟳", style = MaterialTheme.typography.titleLarge)

@@ -69,7 +69,9 @@ class NewsRepository(
             val contents = api.itemContents(auth, batch, token)
             contents.items.forEach { item ->
                 entities += ArticleEntity(
-                    id = item.id,
+                    // items/ids liefert Kurz-IDs (Dezimal), contents Lang-IDs (tag:.../item/<hex>).
+                    // Wir normalisieren auf die Kurz-Form, damit deleteNotIn() die Artikel nicht wieder löscht.
+                    id = normalizeItemId(item.id),
                     feedId = item.origin?.streamId ?: "",
                     feedTitle = item.origin?.title ?: "",
                     title = item.title.ifBlank { "(ohne Titel)" },
@@ -118,5 +120,23 @@ class NewsRepository(
     private companion object {
         const val TAG_READ = "user/-/state/com.google/read"
         const val TAG_STARRED = "user/-/state/com.google/starred"
+
+        /**
+         * "tag:google.com,2005:reader/item/00065a348e0b36dd" → "1788031628162781"
+         * (16-stelliger Hex der 64-Bit-Darstellung → vorzeichenbehafteter Dezimalstring).
+         * Bereits kurze IDs werden unverändert durchgereicht.
+         */
+        fun normalizeItemId(rawId: String): String {
+            val hex = rawId.substringAfterLast("/item/", "")
+            if (hex.isEmpty() || !hex.matches(Regex("^[0-9a-fA-F]{1,16}$"))) return rawId
+            return try {
+                val value = java.math.BigInteger(hex, 16)
+                val two64 = java.math.BigInteger.ONE.shiftLeft(64)
+                if (value >= two64.shiftRight(1)) value.subtract(two64).toString()
+                else value.toString()
+            } catch (_: NumberFormatException) {
+                rawId
+            }
+        }
     }
 }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Wave News</string>
+    <string name="app_name">News Wave</string>
     <string name="login_title">FreshRSS-Konto verbinden</string>
     <string name="login_server">Server-URL (z. B. https://freshrss.heddrich.com)</string>
     <string name="login_user">Benutzername</string>
