@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Zeitung: Blatt mit Textzeilen -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,34h48v40h-48z" />
+    <path
+        android:fillColor="#1A237E"
+        android:pathData="M36,42h20v12h-20z" />
+    <path
+        android:fillColor="#9FA8DA"
+        android:pathData="M60,42h14v4h-14zM60,50h14v4h-14zM36,58h38v4h-38zM36,66h30v4h-30z" />
+</vector>
