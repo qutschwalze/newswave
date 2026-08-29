@@ -28,3 +28,6 @@ Thumbs.db
 
 # FreshRSS Credentials
 freshrss-credentials.json
+
+# Kotlin compiler
+.kotlin/
