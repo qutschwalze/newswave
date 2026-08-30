@@ -13,8 +13,8 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.6.1"
+        versionCode = 13
+        versionName = "0.7.0"
     }
 
     buildTypes {
@@ -67,6 +67,9 @@ dependencies {
     // Artikelbilder in der Übersicht
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-svg:2.7.0") // Brand-Logos sind SVGs
+
+    // KI-Zusammenfassung (Phase 5): Volltext-Extraktion + on-device Summarizer
+    implementation("org.jsoup:jsoup:1.18.1")
 
     // Einstellungen (Server-URL, User, Token)
     implementation("androidx.datastore:datastore-preferences:1.1.1")

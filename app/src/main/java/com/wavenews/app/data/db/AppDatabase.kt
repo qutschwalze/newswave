@@ -98,11 +98,32 @@ interface ArticleDao {
     suspend fun clear()
 }
 
-@Database(entities = [FeedEntity::class, ArticleEntity::class], version = 2, exportSchema = false)
+@Entity(tableName = "summaries")
+data class SummaryEntity(
+    @PrimaryKey val articleId: String, // Kurz-Form-Item-ID, 1:1 zu articles.id
+    val summary: String,
+    val createdAt: Long = System.currentTimeMillis() / 1000,
+)
+
+@Dao
+interface SummaryDao {
+
+    @Query("SELECT * FROM summaries WHERE articleId = :articleId")
+    suspend fun byArticle(articleId: String): SummaryEntity?
+
+    @Upsert
+    suspend fun upsert(summary: SummaryEntity)
+
+    @Query("DELETE FROM summaries WHERE articleId NOT IN (SELECT id FROM articles)")
+    suspend fun cleanup()
+}
+
+@Database(entities = [FeedEntity::class, ArticleEntity::class, SummaryEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun feedDao(): FeedDao
     abstract fun articleDao(): ArticleDao
+    abstract fun summaryDao(): SummaryDao
 
     companion object {
         @Volatile

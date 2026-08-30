@@ -41,6 +41,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -107,6 +108,7 @@ import com.wavenews.app.data.Account
 import com.wavenews.app.data.AppSettings
 import com.wavenews.app.data.BackBehavior
 import com.wavenews.app.data.CardSize
+import com.wavenews.app.data.SummaryService
 import com.wavenews.app.data.ThemeMode
 import com.wavenews.app.data.db.ArticleEntity
 import com.wavenews.app.data.db.FeedEntity
@@ -258,6 +260,44 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
     fun setTopicImages(value: Boolean) = viewModelScope.launch { app.settings.setTopicImages(value) }
     fun setSwipeActions(value: Boolean) = viewModelScope.launch { app.settings.setSwipeActions(value) }
     fun setThemeMode(value: ThemeMode) = viewModelScope.launch { app.settings.setThemeMode(value) }
+
+    // --- KI-Zusammenfassung (Phase 5) ---
+
+    private val _summary = MutableStateFlow<SummaryUiState?>(null)
+
+    /** Aktueller Summary-Zustand für den geöffneten internen Viewer (null = kein Viewer offen). */
+    val summary: StateFlow<SummaryUiState?> = _summary
+
+    private var summaryRequestId = 0
+
+    fun requestSummary(article: ArticleEntity) {
+        if (_summary.value?.articleId == article.id && _summary.value?.loading == true) return
+        val requestId = ++summaryRequestId
+        _summary.value = SummaryUiState(loading = true, articleId = article.id)
+        viewModelScope.launch {
+            val result = try {
+                app.summaryService.getSummary(article.id, article.url)
+            } catch (_: Exception) {
+                SummaryService.SummaryResult.Unavailable
+            }
+            if (summaryRequestId != requestId) return@launch // Artikel gewechselt
+            _summary.value = when (result) {
+                is SummaryService.SummaryResult.Success -> SummaryUiState(
+                    articleId = article.id,
+                    summary = result.summary,
+                    fromCache = result.fromCache,
+                )
+                SummaryService.SummaryResult.Unavailable -> SummaryUiState(
+                    articleId = article.id,
+                    unavailable = true,
+                )
+            }
+        }
+    }
+
+    fun dismissSummary() {
+        _summary.value = null
+    }
 
     // --- Feed-Verwaltung (direkt aus der App, gegen FreshRSS) ---
 
@@ -1028,6 +1068,15 @@ private fun SmallThumb(article: ArticleEntity) {
 
 // --- Artikel-Detail mit Swipe-Aktionen + internem Browser ---
 
+/** UI-Zustand der Zusammenfassung im internen Viewer. */
+data class SummaryUiState(
+    val articleId: String? = null,
+    val loading: Boolean = false,
+    val summary: String? = null,
+    val fromCache: Boolean = false,
+    val unavailable: Boolean = false,
+)
+
 /** Swipe-Richtung im Detail (DOWN = von oben nach unten = intern, UP = extern). */
 enum class SwipeDirection { NONE, DOWN, UP }
 
@@ -1072,15 +1121,21 @@ private fun SwipeGap(direction: SwipeDirection, progress: Float, modifier: Modif
 private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     val context = LocalContext.current
     val settings by vm.appSettings.collectAsState()
+    val summaryState by vm.summary.collectAsState()
     var internalBrowserUrl by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(article.id) {
         if (article.unread) vm.markRead(article, true)
     }
 
-    // Zurück: erst internen Browser schließen, dann zurück zur Übersicht
+    // Zurück: erst internen Browser (mit Summary) schließen, dann zurück zur Übersicht
     BackHandler {
-        if (internalBrowserUrl != null) internalBrowserUrl = null else vm.closeArticle()
+        if (internalBrowserUrl != null) {
+            internalBrowserUrl = null
+            vm.dismissSummary()
+        } else {
+            vm.closeArticle()
+        }
     }
 
     fun openExternal(url: String) {
@@ -1090,10 +1145,10 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     }
 
     fun openInternalViewer(a: ArticleEntity) {
-        // KI-Hook (Phase 5): Hier später statt der Roh-URL die Zusammenfassungsansicht
-        // im internen Viewer öffnen — "Artikel zusammenfassen" nutzt denselben Einstieg
-        // (Runterziehen im Detail). Das ONNX-Modell ersetzt dann die URL durch Summary+Volltext.
         internalBrowserUrl = a.url
+        // KI-Hook (Phase 5): Zusammenfassung parallel vorbereiten — der interne Viewer
+        // zeigt sie als Karte über dem Artikel. Runterziehen im Artikel = derselbe Einstieg.
+        if (a.url.isNotBlank()) vm.requestSummary(a)
     }
 
     Scaffold(
@@ -1225,7 +1280,15 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
 
         Crossfade(targetState = internalBrowserUrl, label = "detail-crossfade") { browserUrl ->
             if (browserUrl != null) {
-                InternalBrowserScreen(url = browserUrl, onClose = { internalBrowserUrl = null })
+                InternalBrowserScreen(
+                    url = browserUrl,
+                    summaryState = summaryState?.takeIf { it.articleId == article.id },
+                    onDismissSummary = { vm.dismissSummary() },
+                    onClose = {
+                        internalBrowserUrl = null
+                        vm.dismissSummary()
+                    },
+                )
             } else {
                 Box(
                     Modifier
@@ -1310,9 +1373,68 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     }
 }
 
+/** Zusammenfassungs-Karte (Phase 5, "Clickbait-Entzauberung") über dem Artikel im internen Viewer. */
+@Composable
+private fun SummaryCard(state: SummaryUiState, onDismiss: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "✦ Zusammenfassung",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (state.fromCache) "gecacht" else "frisch",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Text(
+                    "✕",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier
+                        .padding(start = 10.dp)
+                        .clickable(onClick = onDismiss),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            when {
+                state.loading -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Volltext wird geladen und zusammengefasst …",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                state.summary != null -> Text(
+                    state.summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                state.unavailable -> Text(
+                    "Keine Zusammenfassung möglich (Volltext nicht erreichbar oder zu kurz). Der komplette Artikel steht unten im Viewer.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun InternalBrowserScreen(url: String, onClose: () -> Unit) {
+private fun InternalBrowserScreen(
+    url: String,
+    summaryState: SummaryUiState?,
+    onDismissSummary: () -> Unit,
+    onClose: () -> Unit,
+) {
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -1330,6 +1452,9 @@ private fun InternalBrowserScreen(url: String, onClose: () -> Unit) {
             TextButton(onClick = {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             }) { Text("↗") }
+        }
+        summaryState?.let { state ->
+            SummaryCard(state = state, onDismiss = onDismissSummary)
         }
         AndroidView(
             modifier = Modifier.weight(1f).fillMaxWidth(),
