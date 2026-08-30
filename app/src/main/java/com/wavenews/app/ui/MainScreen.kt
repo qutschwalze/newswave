@@ -275,7 +275,9 @@ fun MainScreen() {
     if (state.account == null) {
         LoginScreen(vm, state)
     } else {
-        NewsScreen(vm, state, articles, settings)
+        state.openArticle?.let { article ->
+            ArticleDetailScreen(article, vm)
+        } ?: NewsScreen(vm, state, articles, settings)
     }
 }
 
@@ -744,6 +746,11 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
 
     LaunchedEffect(article.id) {
         if (article.unread) vm.markRead(article, true)
+    }
+
+    // Zurück: erst internen Browser schließen, dann zurück zur Übersicht
+    BackHandler {
+        if (internalBrowserUrl != null) internalBrowserUrl = null else vm.closeArticle()
     }
 
     fun openExternal(url: String) {
