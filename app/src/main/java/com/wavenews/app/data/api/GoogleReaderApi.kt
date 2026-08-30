@@ -66,10 +66,10 @@ interface GoogleReaderApi {
     ): SubscriptionList
 
     @GET("api/greader.php/reader/api/0/stream/items/ids")
-    suspend fun unreadItemIds(
+    suspend fun itemIds(
         @Header("Authorization") auth: String,
-        @Query("s") stream: String = "user/-/state/com.google/reading-list",
-        @Query("xt") excludeTag: String = "user/-/state/com.google/read",
+        @Query("s") stream: String,
+        @Query("xt") excludeTag: String? = null,
         @Query("n") n: Int = 1000,
         @Query("output") output: String = "json",
     ): ItemIdList
@@ -94,6 +94,31 @@ interface GoogleReaderApi {
         @Field("a") addTag: String? = null,
         @Field("r") removeTag: String? = null,
         @Field("T") token: String,
+    ): ResponseBody
+
+    // --- Feed-Verwaltung (FreshRSS unterstützt die Google-Reader-Admin-Endpunkte) ---
+
+    /** Feed per URL hinzufügen (FreshRSS legt ihn ggf. automatisch an). */
+    @FormUrlEncoded
+    @POST("api/greader.php/reader/api/0/subscription/quickadd")
+    suspend fun quickAddFeed(
+        @Header("Authorization") auth: String,
+        @Field("quickadd") url: String,
+    ): ResponseBody
+
+    /**
+     * Feed ändern/entfernen: ac=edit (Kategorie via a=user/-/label/<Name>),
+     * ac=unsubscribe (entfernen), ac=subscribe.
+     */
+    @FormUrlEncoded
+    @POST("api/greader.php/reader/api/0/subscription/edit")
+    suspend fun subscriptionEdit(
+        @Header("Authorization") auth: String,
+        @Field("ac") action: String,
+        @Field("s") stream: String,
+        @Field("a") addLabel: String? = null,
+        @Field("r") removeLabel: String? = null,
+        @Field("t") title: String? = null,
     ): ResponseBody
 }
 

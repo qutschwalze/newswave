@@ -13,8 +13,8 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.5.1"
+        versionCode = 11
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -32,6 +32,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

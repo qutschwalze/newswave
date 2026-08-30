@@ -32,7 +32,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -40,6 +42,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -96,6 +100,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.wavenews.app.BuildConfig
 import com.wavenews.app.R
 import com.wavenews.app.WaveNewsApp
 import com.wavenews.app.data.Account
@@ -103,6 +108,7 @@ import com.wavenews.app.data.AppSettings
 import com.wavenews.app.data.BackBehavior
 import com.wavenews.app.data.CardSize
 import com.wavenews.app.data.db.ArticleEntity
+import com.wavenews.app.data.db.FeedEntity
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -126,6 +132,8 @@ data class UiState(
     val selectedFeed: String? = null,
     val selectedCategory: String? = null,
     val openArticle: ArticleEntity? = null,
+    val manageBusy: Boolean = false,
+    val manageMessage: String? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -249,6 +257,47 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
     fun setTopicImages(value: Boolean) = viewModelScope.launch { app.settings.setTopicImages(value) }
     fun setSwipeActions(value: Boolean) = viewModelScope.launch { app.settings.setSwipeActions(value) }
 
+    // --- Feed-Verwaltung (direkt aus der App, gegen FreshRSS) ---
+
+    fun addFeed(url: String, category: String?) {
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            try {
+                val ok = app.repository.addFeed(url, category)
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = if (ok) app.getString(R.string.manage_added) else app.getString(R.string.manage_add_failed),
+                )
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(manageBusy = false, manageMessage = "Fehler: ${e.message}")
+            }
+        }
+    }
+
+    fun removeFeed(feedId: String) {
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            try {
+                app.repository.removeFeed(feedId)
+                ui.value = ui.value.copy(manageBusy = false, manageMessage = "Feed entfernt ✓")
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(manageBusy = false, manageMessage = "Fehler: ${e.message}")
+            }
+        }
+    }
+
+    fun moveFeed(feedId: String, category: String) {
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            try {
+                app.repository.moveFeedToCategory(feedId, category)
+                ui.value = ui.value.copy(manageBusy = false, manageMessage = "Kategorie gesetzt ✓")
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(manageBusy = false, manageMessage = "Fehler: ${e.message}")
+            }
+        }
+    }
+
     class Factory(private val app: WaveNewsApp) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T = MainViewModel(app) as T
@@ -264,6 +313,8 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 }
 
 /** Relative Zeit wie "5 Min.", "2 Std.", "3 Tage" — sonst Datum. */
+private const val GITHUB_URL = "https://github.com/qutschwalze/newswave"
+
 private fun relativeTime(publishedSeconds: Long): String {
     val diff = System.currentTimeMillis() / 1000 - publishedSeconds
     return when {
@@ -380,6 +431,7 @@ private fun NewsScreen(
     val feeds by vm.feeds.collectAsState()
     val categories by vm.categories.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
+    var showManage by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
     var backStage by remember { mutableStateOf(0) }
 
@@ -437,6 +489,11 @@ private fun NewsScreen(
                         onClick = { vm.selectFeed(feed.id); scope.launch { drawerState.close() } },
                     )
                 }
+                NavigationDrawerItem(
+                    label = { Text(stringResource(R.string.drawer_manage)) },
+                    selected = false,
+                    onClick = { showManage = true; scope.launch { drawerState.close() } },
+                )
             }
         },
     ) {
@@ -516,6 +573,10 @@ private fun NewsScreen(
         )
     }
 
+    if (showManage) {
+        ManageFeedsSheet(feeds = feeds, state = state, vm = vm, onDismiss = { showManage = false })
+    }
+
     if (showLogout) {
         AlertDialog(
             onDismissRequest = { showLogout = false },
@@ -539,6 +600,7 @@ private fun SettingsSheet(
     onDismiss: () -> Unit,
     onLogoutRequest: () -> Unit,
 ) {
+    val githubContext = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -576,9 +638,176 @@ private fun SettingsSheet(
                 Text(stringResource(R.string.settings_swipe), modifier = Modifier.weight(1f))
                 Switch(checked = settings.swipeActions, onCheckedChange = { vm.setSwipeActions(it) })
             }
+            Spacer(Modifier.height(16.dp))
+
+            // --- Über: Version + GitHub ---
+            Text(stringResource(R.string.settings_about), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.settings_version), modifier = Modifier.weight(1f))
+                Text("v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(
+                Modifier.fillMaxWidth().clickable {
+                    githubContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
+                }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.settings_github), modifier = Modifier.weight(1f))
+                Text("qutschwalze/newswave ↗", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            }
             Spacer(Modifier.height(12.dp))
 
             TextButton(onClick = onLogoutRequest) { Text(stringResource(R.string.logout)) }
+        }
+    }
+}
+
+/** Kuratierte Feed-Vorschläge (alle URLs verifiziert). Kategorie = Ziellabel in FreshRSS. */
+private data class CuratedFeed(val title: String, val url: String, val category: String)
+
+private val curatedCatalog: List<CuratedFeed> = listOf(
+    CuratedFeed("tagesschau", "https://www.tagesschau.de/xml/rss2/", "Nachrichten DE"),
+    CuratedFeed("ZDF Nachrichten", "https://www.zdf.de/rss/zdf/nachrichten", "Nachrichten DE"),
+    CuratedFeed("DIE ZEIT", "https://newsfeed.zeit.de/index", "Nachrichten DE"),
+    CuratedFeed("DW Deutsch", "https://rss.dw.com/rdf/rss-de-all", "Nachrichten DE"),
+    CuratedFeed("ZEIT Politik", "https://newsfeed.zeit.de/politik/index", "Politik"),
+    CuratedFeed("FAZ Politik", "https://www.faz.net/rss/aktuell/politik/", "Politik"),
+    CuratedFeed("SPIEGEL Politik", "https://www.spiegel.de/politik/index.rss", "Politik"),
+    CuratedFeed("Süddeutsche Zeitung", "https://rss.sueddeutsche.de/rss/Topthemen", "Politik"),
+    CuratedFeed("heise top", "https://www.heise.de/rss/heise-top-atom.xml", "Tech DE"),
+    CuratedFeed("Golem", "https://rss.golem.de/rss.php?r=de&feed=RSS2.0", "Tech DE"),
+    CuratedFeed("ComputerBase", "https://www.computerbase.de/rss/news", "Tech DE"),
+    CuratedFeed("heise KI", "https://www.heise.de/rss/heise-ki-atom.xml", "Künstliche Intelligenz"),
+    CuratedFeed("THE DECODER (KI-News)", "https://the-decoder.de/feed/", "Künstliche Intelligenz"),
+    CuratedFeed("MIT Technology Review", "https://www.technologyreview.com/feed/", "Künstliche Intelligenz"),
+    CuratedFeed("Deutsches Schulportal", "https://deutsches-schulportal.de/feed/", "Schule & Bildung"),
+    CuratedFeed("Hacker News", "https://hnrss.org/frontpage", "Tech EN"),
+    CuratedFeed("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index", "Tech EN"),
+    CuratedFeed("The Verge", "https://www.theverge.com/rss/index.xml", "Tech EN"),
+    CuratedFeed("Krebs on Security", "https://krebsonsecurity.com/feed/", "Security EN"),
+    CuratedFeed("9to5Google", "https://9to5google.com/feed/", "Android EN"),
+    CuratedFeed("selfh.st", "https://selfh.st/feed/", "Selfhosted EN"),
+    CuratedFeed("Spektrum der Wissenschaft", "https://www.spektrum.de/rss.xml", "Wissenschaft"),
+)
+
+/** Feed-Verwaltung direkt aus der App: hinzufügen (mit Kategorie), verschieben, entfernen. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
+    var url by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("") }
+    var moveCategory by remember { mutableStateOf("") }
+    var selectedFeedId by remember { mutableStateOf<String?>(null) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Text(stringResource(R.string.manage_feeds_title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(16.dp))
+
+            Text(stringResource(R.string.manage_add_feed), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text(stringResource(R.string.manage_feed_url)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = category,
+                onValueChange = { category = it },
+                label = { Text(stringResource(R.string.manage_feed_category)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { vm.addFeed(url, category.takeIf { it.isNotBlank() }); url = ""; },
+                enabled = !state.manageBusy && url.contains("."),
+            ) { Text(stringResource(R.string.manage_add)) }
+
+            state.manageMessage?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            if (state.manageBusy) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            Spacer(Modifier.height(16.dp))
+
+            Text(stringResource(R.string.manage_existing), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            if (feeds.isEmpty()) {
+                Text(stringResource(R.string.manage_empty), style = MaterialTheme.typography.bodySmall)
+            }
+            feeds.forEach { feed ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(feed.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(feed.category, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = { vm.removeFeed(feed.id) }, enabled = !state.manageBusy) {
+                        Text(stringResource(R.string.manage_remove))
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            Text(stringResource(R.string.manage_move_hint), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            OutlinedTextField(
+                value = moveCategory,
+                onValueChange = { moveCategory = it },
+                label = { Text(stringResource(R.string.manage_feed_category)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Feed-Auswahl fürs Verschieben über die Feed-Liste (erster Tap wählt aus)
+                var expanded by remember { mutableStateOf(false) }
+                TextButton(onClick = { expanded = true }, enabled = feeds.isNotEmpty()) {
+                    Text(feeds.firstOrNull { it.id == selectedFeedId }?.title ?: "Feed wählen")
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    feeds.forEach { feed ->
+                        DropdownMenuItem(
+                            text = { Text(feed.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            onClick = { selectedFeedId = feed.id; expanded = false },
+                        )
+                    }
+                }
+                TextButton(
+                    onClick = {
+                        selectedFeedId?.let { vm.moveFeed(it, moveCategory) }
+                        moveCategory = ""
+                    },
+                    enabled = !state.manageBusy && selectedFeedId != null && moveCategory.isNotBlank(),
+                ) { Text(stringResource(R.string.manage_move)) }
+            }
+            Spacer(Modifier.height(16.dp))
+
+            // --- Kuratierte Vorschläge: ein Tipp fügt den Feed (inkl. Kategorie) hinzu ---
+            Text(stringResource(R.string.manage_curated), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            curatedCatalog.forEach { curated ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(curated.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(curated.category, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = { vm.addFeed(curated.url, curated.category) }, enabled = !state.manageBusy) {
+                        Text("+")
+                    }
+                }
+            }
         }
     }
 }
@@ -891,8 +1120,11 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
         val nestedScrollConnection = remember(article.id, canSwipe) {
             object : NestedScrollConnection {
                 override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                    // Beim Zurückfedern die Bewegung begleiten
-                    if (pullPx > 0f && available.y < 0f) {
+                    // Nur den DOWN-Pull beim Zurückziehen begleiten (Liste ist oben,
+                    // kann negative Bewegung nicht selbst konsumieren). Der UP-Pull
+                    // wird bewusst HIER NICHT behandelt — sonst frisst pre-scroll
+                    // die eigene Zug-Bewegung und die Schwelle ist unerreichbar.
+                    if (pullPx > 0f && pullDirection == SwipeDirection.DOWN && available.y < 0f) {
                         val consumed = available.y.coerceAtLeast(-pullPx)
                         pullPx += consumed
                         if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
@@ -905,16 +1137,38 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                     if (!canSwipe) return Offset.Zero
                     val rest = available.y
                     if (rest > 0f) {
+                        // UP-Pull zurücknehmen, sobald der Finger wieder nach unten zieht
+                        // und die Liste am oberen Anschlag nichts mehr konsumieren kann
+                        if (pullDirection == SwipeDirection.UP && pullPx > 0f) {
+                            val reduce = rest.coerceAtMost(pullPx)
+                            pullPx -= reduce
+                            if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
+                            return Offset(0f, reduce)
+                        }
                         // Ziehen über den oberen Anschlag hinaus → Lücke oben (interner Viewer)
-                        if (pullDirection == SwipeDirection.NONE) pullDirection = SwipeDirection.DOWN
-                        if (pullDirection == SwipeDirection.DOWN) pullPx = (pullPx + rest).coerceIn(0f, maxDragPx)
-                        return Offset(0f, rest)
+                        if (pullDirection == SwipeDirection.NONE || pullDirection == SwipeDirection.DOWN) {
+                            pullDirection = SwipeDirection.DOWN
+                            pullPx = (pullPx + rest).coerceIn(0f, maxDragPx)
+                            return Offset(0f, rest)
+                        }
+                        return Offset.Zero
                     }
                     if (rest < 0f) {
+                        // DOWN-Pull zurücknehmen, wenn der Finger wieder nach oben zieht
+                        // und die Liste am unteren Anschlag nichts mehr konsumieren kann
+                        if (pullDirection == SwipeDirection.DOWN && pullPx > 0f) {
+                            val reduce = (-rest).coerceAtMost(pullPx)
+                            pullPx -= reduce
+                            if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
+                            return Offset(0f, -reduce)
+                        }
                         // Ziehen über den unteren Anschlag hinaus → Lücke unten (externer Browser)
-                        if (pullDirection == SwipeDirection.NONE) pullDirection = SwipeDirection.UP
-                        if (pullDirection == SwipeDirection.UP) pullPx = (pullPx - rest).coerceIn(0f, maxDragPx)
-                        return Offset(0f, rest)
+                        if (pullDirection == SwipeDirection.NONE || pullDirection == SwipeDirection.UP) {
+                            pullDirection = SwipeDirection.UP
+                            pullPx = (pullPx - rest).coerceIn(0f, maxDragPx)
+                            return Offset(0f, rest)
+                        }
+                        return Offset.Zero
                     }
                     return Offset.Zero
                 }
@@ -931,7 +1185,7 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                     } else if (pullPx > 0f) {
                         animatePullReset()
                     }
-                    // Fling nicht konsumieren — die Liste darf weitergleit werden
+                    // Fling nicht konsumieren — die Liste darf weitergleiten
                     return Velocity.Zero
                 }
             }

@@ -23,6 +23,22 @@
     <string name="notif_new_articles">%1$d neue Artikel</string>
     <string name="notif_new_articles_text">Tippen, um News Wave zu öffnen</string>
 
+    <string name="manage_feeds_title">Feeds verwalten</string>
+    <string name="manage_add_feed">Feed hinzufügen</string>
+    <string name="manage_feed_url">Feed-URL (https://…/rss)</string>
+    <string name="manage_feed_category">Kategorie (optional)</string>
+    <string name="manage_add">Hinzufügen</string>
+    <string name="manage_added">Feed hinzugefügt ✓</string>
+    <string name="manage_add_failed">Feed konnte nicht hinzugefügt werden (URL prüfen)</string>
+    <string name="drawer_manage">Feeds verwalten</string>
+    <string name="manage_existing">Vorhandene Feeds</string>
+    <string name="manage_remove">Entfernen</string>
+    <string name="manage_move_hint">Kategorie ändern:</string>
+    <string name="manage_move">Verschieben</string>
+    <string name="manage_empty">Noch keine Feeds</string>
+    <string name="manage_busy">Arbeite …</string>
+    <string name="manage_curated">Kuratierte Vorschläge</string>
+
     <string name="settings_title">Einstellungen</string>
     <string name="settings_cards">Kartengröße</string>
     <string name="card_standard">Standard (großes Bild)</string>
@@ -39,4 +55,7 @@
     <string name="internal_browser">Interner Browser</string>
     <string name="toast_main">Hauptübersicht</string>
     <string name="toast_external">Öffne im Browser …</string>
+    <string name="settings_version">App-Version</string>
+    <string name="settings_github">GitHub-Repository</string>
+    <string name="settings_about">Über</string>
 </resources>
