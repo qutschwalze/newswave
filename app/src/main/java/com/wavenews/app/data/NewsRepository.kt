@@ -5,6 +5,8 @@ import com.wavenews.app.data.api.GoogleReaderApi
 import com.wavenews.app.data.db.AppDatabase
 import com.wavenews.app.data.db.ArticleEntity
 import com.wavenews.app.data.db.FeedEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Datenquelle: FreshRSS über die Google-Reader-kompatible API (Standard, unverändert).
@@ -169,6 +171,27 @@ class NewsRepository(
         val (api, auth) = client()
         api.subscriptionEdit(auth, action = "edit", stream = feedId, addLabel = category.trim())
         sync()
+    }
+
+    /**
+     * OPML-Import (Datei-Inhalt oder von einer URL geladen): fügt alle noch nicht
+     * abonnierten Feeds hinzu, sortiert sie in die OPML-Kategorien (Ordner) ein und
+     * synchronisiert am Ende. Liefert (added, skipped, failed).
+     */
+    suspend fun importOpml(opml: String): Triple<Int, Int, Int> = withContext(Dispatchers.IO) {
+        val feeds = OpmlParser.parse(opml)
+        var added = 0
+        var skipped = 0
+        var failed = 0
+        feeds.forEach { feed ->
+            if (isFeedSubscribed(feed.url)) {
+                skipped++
+                return@forEach
+            }
+            val ok = runCatching { addFeed(feed.url, feed.category.takeIf { it.isNotBlank() }) }.getOrDefault(false)
+            if (ok) added++ else failed++
+        }
+        Triple(added, skipped, failed)
     }
 
     private companion object {

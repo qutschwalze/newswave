@@ -48,6 +48,12 @@
     <string name="discover_select_all">Alle wählen</string>
     <string name="discover_import">Importieren</string>
     <string name="discover_subscribed">abonniert</string>
+    <string name="opml_title">OPML importieren</string>
+    <string name="opml_hint">Feed-Sammlung als OPML-Datei (Export aus Feedly, Google Reader, FreshRSS …) oder direkt von einer URL laden. Kategorien aus dem OPML werden übernommen.</string>
+    <string name="opml_pick_file">OPML-Datei wählen</string>
+    <string name="opml_url_label">OPML-URL (https://…)</string>
+    <string name="opml_load">Laden</string>
+    <string name="opml_failed">OPML-Import fehlgeschlagen</string>
 
     <string name="settings_title">Einstellungen</string>
     <string name="settings_cards">Kartengröße</string>

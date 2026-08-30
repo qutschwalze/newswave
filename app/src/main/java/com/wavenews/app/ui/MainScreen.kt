@@ -69,6 +69,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -118,12 +119,14 @@ import com.wavenews.app.data.db.FeedEntity
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // --- ViewModel ---
 
@@ -302,6 +305,101 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         _summary.value = null
     }
 
+    // --- Vorlesen (System-TTS, kein Cloud) ---
+
+    /** UI-Zustand des Vorlesens (welcher Artikel, läuft es). */
+    data class TtsState(val playing: Boolean = false, val articleId: String? = null)
+
+    private val ttsReader by lazy { com.wavenews.app.tts.TtsReader(app) }
+    private val _tts = MutableStateFlow(TtsState())
+
+    /** Aktueller Vorlese-Zustand für die UI. */
+    val tts: StateFlow<TtsState> = _tts
+
+    fun toggleSpeak(article: ArticleEntity) {
+        if (_tts.value.playing && _tts.value.articleId == article.id) {
+            ttsReader.stop()
+            _tts.value = TtsState(playing = false, articleId = null)
+            return
+        }
+        ttsReader.onStateChanged = { playing ->
+            if (!playing) _tts.value = _tts.value.copy(playing = false)
+        }
+        val summaryText = _summary.value?.takeIf { it.articleId == article.id }?.summary
+        val teaser = runCatching { org.jsoup.Jsoup.parse(article.summaryHtml).text() }.getOrDefault("")
+        val body = summaryText ?: teaser
+        val text = (article.title + ". " + body).trim().take(4000)
+        _tts.value = TtsState(playing = true, articleId = article.id)
+        ttsReader.speak(text, detectArticleLanguage(text))
+    }
+
+    fun stopTts() {
+        if (_tts.value.playing) {
+            ttsReader.stop()
+            _tts.value = TtsState(playing = false, articleId = null)
+        }
+    }
+
+    private fun detectArticleLanguage(text: String): String {
+        val t = " " + text.lowercase() + " "
+        val germanMarkers = listOf(" der ", " die ", " das ", " und ", " nicht ", " für ", " mit ", " von ")
+        val hasUmlauts = text.any { it in "äöüßÄÖÜ" }
+        return if (hasUmlauts || germanMarkers.any { it in t }) "de" else "en"
+    }
+
+    override fun onCleared() {
+        ttsReader.shutdown()
+    }
+
+    // --- OPML-Import (Datei oder URL) ---
+
+    fun importOpmlFromUri(uri: android.net.Uri) {
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            try {
+                val opml = app.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: throw IllegalStateException("Datei konnte nicht gelesen werden")
+                val (added, skipped, failed) = app.repository.importOpml(opml)
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.manage_bulk_result, added, skipped, failed),
+                )
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.opml_failed) + " (${e.message})",
+                )
+            }
+        }
+    }
+
+    fun importOpmlFromUrl(url: String) {
+        if (url.isBlank()) return
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            try {
+                val opml = withContext(Dispatchers.IO) {
+                    java.net.URL(url).openConnection().let { conn ->
+                        (conn as java.net.HttpURLConnection).apply {
+                            connectTimeout = 15_000
+                            readTimeout = 30_000
+                            setRequestProperty("User-Agent", "NewsWave/0.8")
+                        }.inputStream.bufferedReader().use { it.readText() }
+                    }
+                }
+                val (added, skipped, failed) = app.repository.importOpml(opml)
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.manage_bulk_result, added, skipped, failed),
+                )
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.opml_failed) + " (${e.message})",
+                )
+            }
+        }
+    }
     // --- Feed-Verwaltung (direkt aus der App, gegen FreshRSS) ---
 
     /** Bulk-Import aus dem Katalog: fügt alle noch nicht abonnierten Feeds hinzu. */
@@ -886,6 +984,36 @@ private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainVi
             }
             Spacer(Modifier.height(16.dp))
 
+            // --- OPML-Import: Datei (z. B. Google-Reader/Feedly/FreshRSS-Export) oder URL ---
+            val opmlPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+            ) { uri ->
+                if (uri != null) vm.importOpmlFromUri(uri)
+            }
+            var opmlUrl by remember { mutableStateOf("") }
+            Text(stringResource(R.string.opml_title), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Text(stringResource(R.string.opml_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(
+                onClick = { opmlPicker.launch(arrayOf("*/*")) },
+                enabled = !state.manageBusy,
+            ) { Text(stringResource(R.string.opml_pick_file)) }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = opmlUrl,
+                    onValueChange = { opmlUrl = it },
+                    label = { Text(stringResource(R.string.opml_url_label)) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(
+                    onClick = { vm.importOpmlFromUrl(opmlUrl); opmlUrl = "" },
+                    enabled = !state.manageBusy && opmlUrl.contains("."),
+                ) { Text(stringResource(R.string.opml_load)) }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
             // --- Katalog-Einstieg: "Feed entdecken" (Suche, Kategorien, Bulk-Import) ---
             Row(
                 Modifier.fillMaxWidth().clickable(onClick = onDiscoverFeeds),
@@ -1286,7 +1414,13 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     val context = LocalContext.current
     val settings by vm.appSettings.collectAsState()
     val summaryState by vm.summary.collectAsState()
+    val ttsState by vm.tts.collectAsState()
     var internalBrowserUrl by remember { mutableStateOf<String?>(null) }
+
+    // Vorlesen stoppen, sobald der Artikel verlassen wird
+    DisposableEffect(article.id) {
+        onDispose { vm.stopTts() }
+    }
 
     LaunchedEffect(article.id) {
         if (article.unread) vm.markRead(article, true)
@@ -1325,6 +1459,12 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { vm.toggleSpeak(article) }) {
+                        Text(
+                            if (ttsState.playing && ttsState.articleId == article.id) "⏹" else "🔊",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                    }
                     IconButton(onClick = { vm.toggleStar(article) }) {
                         Text(
                             if (article.starred) "★" else "☆",
