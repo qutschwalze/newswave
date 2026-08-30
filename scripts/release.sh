@@ -22,7 +22,7 @@ git tag -a "v$VERSION" -m "News Wave v$VERSION" 2>/dev/null || echo "Tag v$VERSI
 git push origin "v$VERSION"
 
 # 3) Release erstellen + APK hochladen (Token nie ausgeben)
-TOKEN=$(grep -oP '^https://[^:]+:\K[^@]+' "$HOME/.git-credentials" | head -1)
+TOKEN=$(grep -oP '^https://[^:]+:\K[^@]+' "${HOME:-/root}/.git-credentials" | head -1)
 [ -n "$TOKEN" ] || { echo "Kein Token in ~/.git-credentials"; exit 1; }
 
 BODY=$(cat <<EOF
