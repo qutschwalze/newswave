@@ -63,6 +63,7 @@ class NewsRepository(
                 id = s.id,
                 title = (s.title ?: s.url ?: s.id).ifBlank { s.id },
                 category = s.categories.orEmpty().firstOrNull()?.label?.takeIf { it.isNotBlank() } ?: "Alle",
+                feedUrl = s.url,
                 htmlUrl = s.htmlUrl,
                 iconUrl = s.iconUrl,
             )
@@ -140,6 +141,9 @@ class NewsRepository(
      * Feed per URL hinzufügen, optional in eine Kategorie (Label) einsortieren.
      * FreshRSS legt Kategorien beim Labeln automatisch an. Liefert true bei Erfolg.
      */
+    suspend fun isFeedSubscribed(url: String): Boolean =
+        db.feedDao().byUrl(url.trim()) != null
+
     suspend fun addFeed(url: String, category: String?): Boolean {
         val (api, auth) = client()
         val body = api.quickAddFeed(auth, url.trim()).string()

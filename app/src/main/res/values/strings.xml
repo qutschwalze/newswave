@@ -38,6 +38,16 @@
     <string name="manage_empty">Noch keine Feeds</string>
     <string name="manage_busy">Arbeite …</string>
     <string name="manage_curated">Kuratierte Vorschläge</string>
+    <string name="manage_discover">Feed entdecken …</string>
+    <string name="manage_bulk_result">%1$d hinzugefügt, %2$d übersprungen, %3$d fehlgeschlagen</string>
+    <string name="discover_title">Feed entdecken</string>
+    <string name="discover_subtitle">%1$d kuratierte Quellen — durchsuchen, filtern, als Auswahl importieren</string>
+    <string name="discover_search">Suchen (Titel, Kategorie, URL)</string>
+    <string name="discover_all">Alle</string>
+    <string name="discover_selected">%1$d ausgewählt</string>
+    <string name="discover_select_all">Alle wählen</string>
+    <string name="discover_import">Importieren</string>
+    <string name="discover_subscribed">abonniert</string>
 
     <string name="settings_title">Einstellungen</string>
     <string name="settings_cards">Kartengröße</string>

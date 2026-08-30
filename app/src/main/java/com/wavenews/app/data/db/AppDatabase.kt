@@ -17,6 +17,7 @@ data class FeedEntity(
     @PrimaryKey val id: String, // streamId, z. B. "feed/12"
     val title: String,
     val category: String,
+    val feedUrl: String?, // RSS-URL (für "bereits abonniert"-Checks im Katalog)
     val htmlUrl: String?,
     val iconUrl: String?,
 )
@@ -44,6 +45,9 @@ interface FeedDao {
 
     @Query("SELECT * FROM feeds ORDER BY category, title")
     fun observeAll(): Flow<List<FeedEntity>>
+
+    @Query("SELECT * FROM feeds WHERE feedUrl = :url LIMIT 1")
+    suspend fun byUrl(url: String): FeedEntity?
 
     @Query("SELECT DISTINCT category FROM feeds WHERE category != '' ORDER BY category")
     fun observeCategories(): Flow<List<String>>
@@ -118,7 +122,7 @@ interface SummaryDao {
     suspend fun cleanup()
 }
 
-@Database(entities = [FeedEntity::class, ArticleEntity::class, SummaryEntity::class], version = 3, exportSchema = false)
+@Database(entities = [FeedEntity::class, ArticleEntity::class, SummaryEntity::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun feedDao(): FeedDao

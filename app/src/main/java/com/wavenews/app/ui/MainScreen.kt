@@ -16,6 +16,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -70,6 +72,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -301,6 +304,37 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
 
     // --- Feed-Verwaltung (direkt aus der App, gegen FreshRSS) ---
 
+    /** Bulk-Import aus dem Katalog: fügt alle noch nicht abonnierten Feeds hinzu. */
+    fun importCuratedFeeds(feeds: List<CuratedFeed>) {
+        viewModelScope.launch {
+            ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
+            var added = 0
+            var skipped = 0
+            var failed = 0
+            try {
+                feeds.forEach { curated ->
+                    val already = runCatching { app.repository.isFeedSubscribed(curated.url) }.getOrNull() == true
+                    if (already) {
+                        skipped++
+                        return@forEach
+                    }
+                    val ok = runCatching { app.repository.addFeed(curated.url, curated.category) }.getOrDefault(false)
+                    if (ok) added++ else failed++
+                }
+                if (added > 0) app.repository.sync()
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.manage_bulk_result, added, skipped, failed),
+                )
+            } catch (e: Exception) {
+                ui.value = ui.value.copy(
+                    manageBusy = false,
+                    manageMessage = app.getString(R.string.manage_add_failed) + " (${e.message})",
+                )
+            }
+        }
+    }
+
     fun addFeed(url: String, category: String?) {
         viewModelScope.launch {
             ui.value = ui.value.copy(manageBusy = true, manageMessage = null)
@@ -474,6 +508,7 @@ private fun NewsScreen(
     val categories by vm.categories.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showManage by remember { mutableStateOf(false) }
+    var showDiscover by remember { mutableStateOf(false) }
     var showLogout by remember { mutableStateOf(false) }
     var backStage by remember { mutableStateOf(0) }
 
@@ -615,7 +650,22 @@ private fun NewsScreen(
     }
 
     if (showManage) {
-        ManageFeedsSheet(feeds = feeds, state = state, vm = vm, onDismiss = { showManage = false })
+        ManageFeedsSheet(
+            feeds = feeds,
+            state = state,
+            vm = vm,
+            onDismiss = { showManage = false },
+            onDiscoverFeeds = { showManage = false; showDiscover = true },
+        )
+    }
+
+    if (showDiscover) {
+        DiscoverFeedsSheet(
+            subscribedUrls = feeds.mapNotNull { it.feedUrl },
+            state = state,
+            vm = vm,
+            onDismiss = { showDiscover = false },
+        )
     }
 
     if (showLogout) {
@@ -734,38 +784,10 @@ private fun SettingsSheet(
     }
 }
 
-/** Kuratierte Feed-Vorschläge (alle URLs verifiziert). Kategorie = Ziellabel in FreshRSS. */
-private data class CuratedFeed(val title: String, val url: String, val category: String)
-
-private val curatedCatalog: List<CuratedFeed> = listOf(
-    CuratedFeed("tagesschau", "https://www.tagesschau.de/xml/rss2/", "Nachrichten DE"),
-    CuratedFeed("ZDF Nachrichten", "https://www.zdf.de/rss/zdf/nachrichten", "Nachrichten DE"),
-    CuratedFeed("DIE ZEIT", "https://newsfeed.zeit.de/index", "Nachrichten DE"),
-    CuratedFeed("DW Deutsch", "https://rss.dw.com/rdf/rss-de-all", "Nachrichten DE"),
-    CuratedFeed("ZEIT Politik", "https://newsfeed.zeit.de/politik/index", "Politik"),
-    CuratedFeed("FAZ Politik", "https://www.faz.net/rss/aktuell/politik/", "Politik"),
-    CuratedFeed("SPIEGEL Politik", "https://www.spiegel.de/politik/index.rss", "Politik"),
-    CuratedFeed("Süddeutsche Zeitung", "https://rss.sueddeutsche.de/rss/Topthemen", "Politik"),
-    CuratedFeed("heise top", "https://www.heise.de/rss/heise-top-atom.xml", "Tech DE"),
-    CuratedFeed("Golem", "https://rss.golem.de/rss.php?r=de&feed=RSS2.0", "Tech DE"),
-    CuratedFeed("ComputerBase", "https://www.computerbase.de/rss/news", "Tech DE"),
-    CuratedFeed("heise KI", "https://www.heise.de/rss/heise-ki-atom.xml", "Künstliche Intelligenz"),
-    CuratedFeed("THE DECODER (KI-News)", "https://the-decoder.de/feed/", "Künstliche Intelligenz"),
-    CuratedFeed("MIT Technology Review", "https://www.technologyreview.com/feed/", "Künstliche Intelligenz"),
-    CuratedFeed("Deutsches Schulportal", "https://deutsches-schulportal.de/feed/", "Schule & Bildung"),
-    CuratedFeed("Hacker News", "https://hnrss.org/frontpage", "Tech EN"),
-    CuratedFeed("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index", "Tech EN"),
-    CuratedFeed("The Verge", "https://www.theverge.com/rss/index.xml", "Tech EN"),
-    CuratedFeed("Krebs on Security", "https://krebsonsecurity.com/feed/", "Security EN"),
-    CuratedFeed("9to5Google", "https://9to5google.com/feed/", "Android EN"),
-    CuratedFeed("selfh.st", "https://selfh.st/feed/", "Selfhosted EN"),
-    CuratedFeed("Spektrum der Wissenschaft", "https://www.spektrum.de/rss.xml", "Wissenschaft"),
-)
-
 /** Feed-Verwaltung direkt aus der App: hinzufügen (mit Kategorie), verschieben, entfernen. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
+private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainViewModel, onDismiss: () -> Unit, onDiscoverFeeds: () -> Unit) {
     var url by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("") }
     var moveCategory by remember { mutableStateOf("") }
@@ -864,6 +886,21 @@ private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainVi
             }
             Spacer(Modifier.height(16.dp))
 
+            // --- Katalog-Einstieg: "Feed entdecken" (Suche, Kategorien, Bulk-Import) ---
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onDiscoverFeeds),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.manage_discover),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("→", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.height(16.dp))
+
             // --- Kuratierte Vorschläge: ein Tipp fügt den Feed (inkl. Kategorie) hinzu ---
             Text(stringResource(R.string.manage_curated), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
             curatedCatalog.forEach { curated ->
@@ -877,6 +914,133 @@ private fun ManageFeedsSheet(feeds: List<FeedEntity>, state: UiState, vm: MainVi
                     }
                     TextButton(onClick = { vm.addFeed(curated.url, curated.category) }, enabled = !state.manageBusy) {
                         Text("+")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** "Feed entdecken": kuratierter Katalog mit Suche, Kategorie-Filter und Bulk-Import. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DiscoverFeedsSheet(subscribedUrls: List<String>, state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
+    var query by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
+    val selected = remember { mutableStateMapOf<String, Boolean>() } // url -> checked
+
+    val normalizedSubscribed = remember(subscribedUrls) { subscribedUrls.map { it.trimEnd('/') } }
+    fun isSubscribed(url: String) = url.trimEnd('/') in normalizedSubscribed
+
+    val filtered = remember(query, selectedCategory) {
+        curatedCatalog.filter { feed ->
+            (selectedCategory == null || feed.category == selectedCategory) &&
+                (
+                    query.isBlank() ||
+                        feed.title.contains(query, ignoreCase = true) ||
+                        feed.category.contains(query, ignoreCase = true) ||
+                        feed.url.contains(query, ignoreCase = true)
+                    )
+        }
+    }
+    val selectedCount = selected.count { it.value }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+        ) {
+            Text(stringResource(R.string.discover_title), style = MaterialTheme.typography.titleLarge)
+            Text(
+                stringResource(R.string.discover_subtitle, curatedCatalog.size),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text(stringResource(R.string.discover_search)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+
+            // Kategorie-Chips (horizontal scrollbar)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                FilterChip(
+                    selected = selectedCategory == null,
+                    onClick = { selectedCategory = null },
+                    label = { Text(stringResource(R.string.discover_all)) },
+                )
+                catalogCategories.forEach { cat ->
+                    FilterChip(
+                        selected = selectedCategory == cat,
+                        onClick = { selectedCategory = if (selectedCategory == cat) null else cat },
+                        label = { Text(cat) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+
+            if (state.manageBusy) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+            }
+
+            // Auswahl-Aktionen
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.discover_selected, selectedCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = { filtered.forEach { if (!isSubscribed(it.url)) selected[it.url] = true } },
+                    enabled = !state.manageBusy,
+                ) { Text(stringResource(R.string.discover_select_all)) }
+                Button(
+                    onClick = {
+                        vm.importCuratedFeeds(curatedCatalog.filter { selected[it.url] == true })
+                        selected.clear()
+                    },
+                    enabled = !state.manageBusy && selectedCount > 0,
+                ) { Text(stringResource(R.string.discover_import)) }
+            }
+
+            state.manageMessage?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Text(msg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.height(8.dp))
+
+            // Feed-Liste des Katalogs
+            filtered.forEach { feed ->
+                val subscribed = isSubscribed(feed.url)
+                val checked = selected[feed.url] == true
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(feed.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(feed.category, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (subscribed) {
+                        Text(
+                            stringResource(R.string.discover_subscribed),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Checkbox(checked = checked, onCheckedChange = { selected[feed.url] = it }, enabled = !state.manageBusy)
                     }
                 }
             }
