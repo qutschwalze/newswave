@@ -31,3 +31,6 @@ freshrss-credentials.json
 
 # Kotlin compiler
 .kotlin/
+
+# gh CLI state
+.local/
