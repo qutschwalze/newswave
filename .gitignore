@@ -34,3 +34,6 @@ freshrss-credentials.json
 
 # gh CLI state
 .local/
+
+# Deployment (interne Infrastruktur-Details)
+deploy/
