@@ -78,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -271,6 +272,16 @@ private fun relativeTime(publishedSeconds: Long): String {
         diff < 7 * 86_400 -> "${diff / 86_400} Tage"
         else -> DateFormat.getDateInstance(DateFormat.SHORT).format(Date(publishedSeconds * 1000))
     }
+}
+
+/** Artikel-Link (Titel + URL) über den System-Share-Sheet teilen. */
+private fun shareArticle(context: Context, article: ArticleEntity) {
+    if (article.url.isBlank()) return
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, "${article.title}\n${article.url}")
+    }
+    context.startActivity(Intent.createChooser(send, null))
 }
 
 // --- Root ---
@@ -575,6 +586,7 @@ private fun SettingsSheet(
 
 @Composable
 private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel, settings: AppSettings) {
+    val context = LocalContext.current
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -582,9 +594,9 @@ private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel, settin
     ) {
         items(articles, key = { it.id }) { article ->
             when (settings.cardSize) {
-                CardSize.STANDARD -> ArticleCard(article, imageHeight = null, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) })
-                CardSize.MEDIUM -> ArticleCard(article, imageHeight = 110.dp, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) })
-                CardSize.SMALL -> ArticleRowSmall(article, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) })
+                CardSize.STANDARD -> ArticleCard(article, imageHeight = null, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) }, onShare = { shareArticle(context, article) })
+                CardSize.MEDIUM -> ArticleCard(article, imageHeight = 110.dp, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) }, onShare = { shareArticle(context, article) })
+                CardSize.SMALL -> ArticleRowSmall(article, onClick = { vm.openArticle(article) }, onStar = { vm.toggleStar(article) }, onShare = { shareArticle(context, article) })
             }
         }
     }
@@ -648,7 +660,7 @@ private fun CardImage(article: ArticleEntity, imageHeight: androidx.compose.ui.u
 }
 
 @Composable
-private fun ArticleCard(article: ArticleEntity, imageHeight: androidx.compose.ui.unit.Dp?, onClick: () -> Unit, onStar: () -> Unit) {
+private fun ArticleCard(article: ArticleEntity, imageHeight: androidx.compose.ui.unit.Dp?, onClick: () -> Unit, onStar: () -> Unit, onShare: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column {
             CardImage(article, imageHeight)
@@ -675,6 +687,11 @@ private fun ArticleCard(article: ArticleEntity, imageHeight: androidx.compose.ui
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.clickable(onClick = onStar),
                     )
+                    Text(
+                        "⤴",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(start = 12.dp).clickable(onClick = onShare),
+                    )
                 }
             }
         }
@@ -683,7 +700,7 @@ private fun ArticleCard(article: ArticleEntity, imageHeight: androidx.compose.ui
 
 /** Kompakte Zeilen-Karte (Klein): Mini-Bild links (Artikelbild/Logo/Monogramm), Text rechts. */
 @Composable
-private fun ArticleRowSmall(article: ArticleEntity, onClick: () -> Unit, onStar: () -> Unit) {
+private fun ArticleRowSmall(article: ArticleEntity, onClick: () -> Unit, onStar: () -> Unit, onShare: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             SmallThumb(article)
@@ -709,6 +726,11 @@ private fun ArticleRowSmall(article: ArticleEntity, onClick: () -> Unit, onStar:
                 if (article.starred) "★" else "☆",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.clickable(onClick = onStar).padding(start = 6.dp),
+            )
+            Text(
+                "⤴",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.clickable(onClick = onShare).padding(start = 10.dp),
             )
         }
     }
@@ -748,78 +770,67 @@ private fun SmallThumb(article: ArticleEntity) {
 enum class SwipeDirection { NONE, DOWN, UP }
 
 /**
- * Kleiner animierter Hinweis an der Kante: erscheint beim Ziehen, zeigt Ziel + Fortschritt.
- * progress >= 1 → Farbe wechselt auf primary (Auslöseschwelle erreicht).
+ * Die sich öffnende "Lücke" beim Ziehen: zeigt Ziel + Fortschritt,
+ * färbt sich bei erreichter Schwelle.
  */
 @Composable
-private fun SwipeIndicator(direction: SwipeDirection, progress: Float, modifier: Modifier = Modifier) {
-    AnimatedVisibility(
-        visible = direction != SwipeDirection.NONE && progress > 0.02f,
-        enter = fadeIn() + slideInVertically { if (direction == SwipeDirection.DOWN) -it / 2 else it / 2 },
-        exit = fadeOut(),
+private fun SwipeGap(direction: SwipeDirection, progress: Float, modifier: Modifier = Modifier) {
+    val armed = progress >= 1f
+    Surface(
+        color = if (armed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
         modifier = modifier,
     ) {
-        Surface(
-            color = if (progress >= 1f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
-            shadowElevation = 4.dp,
+        Column(
+            Modifier.fillMaxSize().padding(vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
-            Column(
-                Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    when (direction) {
-                        SwipeDirection.DOWN -> "↓ " + stringResource(R.string.swipe_internal)
-                        SwipeDirection.UP -> "↑ " + stringResource(R.string.swipe_external)
-                        SwipeDirection.NONE -> ""
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (progress >= 1f) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth(0.7f).height(3.dp),
-                )
-            }
+            Text(
+                when (direction) {
+                    SwipeDirection.DOWN -> "↓ " + stringResource(R.string.swipe_internal)
+                    SwipeDirection.UP -> "↑ " + stringResource(R.string.swipe_external)
+                    SwipeDirection.NONE -> ""
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = if (armed) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (armed) FontWeight.Bold else FontWeight.Normal,
+            )
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(0.6f).height(3.dp),
+                color = if (armed) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }
 
 /**
  * Schmale Gestenzone an der Kante (nur diese konsumiert Touch-Events —
- * der Artikelinhalt dazwischen bleibt normal scrollbar).
+ * der Artikelinhalt dazwischen bleibt normal scrollbar). Das Ziehen verschiebt
+ * den gesamten Inhalt ("Artikel klebt am Finger") und öffnet die Lücke.
  */
 @Composable
 private fun SwipeZone(
     direction: SwipeDirection,
     height: androidx.compose.ui.unit.Dp,
-    thresholdPx: Float,
-    onProgress: (Float) -> Unit,
-    onReset: () -> Unit,
-    onTrigger: () -> Unit,
+    onDelta: (Float) -> Unit,
+    onEnd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier
             .height(height)
             .pointerInput(direction) {
-                var pull = 0f
                 detectVerticalDragGestures(
-                    onDragStart = { pull = 0f },
                     onVerticalDrag = { change, amount ->
-                        // DOWN-Zone reagiert auf positives Delta, UP-Zone auf negatives
+                        // DOWN-Zone: positiv ziehen; UP-Zone: negativ ziehen
                         val effective = if (direction == SwipeDirection.DOWN) amount else -amount
-                        pull = (pull + effective).coerceAtLeast(0f)
-                        onProgress(pull / thresholdPx)
+                        if (effective > 0f) onDelta(effective)
                         change.consume()
                     },
-                    onDragEnd = {
-                        if (pull >= thresholdPx) onTrigger() else onReset()
-                        pull = 0f
-                    },
-                    onDragCancel = { onReset(); pull = 0f },
+                    onDragEnd = { onEnd() },
+                    onDragCancel = { onEnd() },
                 )
             },
     )
@@ -847,6 +858,13 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }
 
+    fun openInternalViewer(a: ArticleEntity) {
+        // KI-Hook (Phase 5): Hier später statt der Roh-URL die Zusammenfassungsansicht
+        // im internen Viewer öffnen — "Artikel zusammenfassen" nutzt denselben Einstieg
+        // (Runterziehen im Detail). Das ONNX-Modell ersetzt dann die URL durch Summary+Volltext.
+        internalBrowserUrl = a.url
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -864,19 +882,31 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                         )
                     }
                     IconButton(onClick = { article.url.takeIf { it.isNotBlank() }?.let { openExternal(it) } }) { Text("↗") }
+                    IconButton(onClick = { shareArticle(context, article) }) { Text("⤴") }
                 },
             )
         },
     ) { padding ->
         val density = LocalDensity.current
-        val zoneHeight = 52.dp
-        val thresholdPx = with(density) { 110.dp.toPx() }
+        val scope = rememberCoroutineScope()
+        val thresholdPx = with(density) { 120.dp.toPx() }
+        val maxDragPx = with(density) { 260.dp.toPx() }
         val canSwipe = settings.swipeActions && article.url.isNotBlank()
 
-        var topProgress by remember(article.id) { mutableFloatStateOf(0f) }
-        var topDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
-        var bottomProgress by remember(article.id) { mutableFloatStateOf(0f) }
-        var bottomDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+        // Ziehen verschiebt den Inhalt ("Artikel klebt am Finger"); die Lücke
+        // oben (intern) bzw. unten (extern) zeigt das Ziel.
+        var swipeOffsetPx by remember(article.id) { mutableFloatStateOf(0f) }
+        var swipeDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+
+        fun animateSwipeReset() {
+            scope.launch {
+                val anim = androidx.compose.animation.core.Animatable(swipeOffsetPx)
+                anim.animateTo(0f, androidx.compose.animation.core.tween(200)) {
+                    swipeOffsetPx = value // Receiver-Property des Animatable
+                }
+                swipeDirection = SwipeDirection.NONE
+            }
+        }
 
         Crossfade(targetState = internalBrowserUrl, label = "detail-crossfade") { browserUrl ->
             if (browserUrl != null) {
@@ -887,66 +917,99 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                         .padding(padding)
                         .fillMaxSize(),
                 ) {
-                    SwipeIndicator(direction = topDirection, progress = topProgress.coerceIn(0f, 1f), modifier = Modifier.align(Alignment.TopCenter))
-                    SwipeIndicator(direction = bottomDirection, progress = bottomProgress.coerceIn(0f, 1f), modifier = Modifier.align(Alignment.BottomCenter))
-
-                    Column(Modifier.fillMaxSize()) {
-                        Text(
-                            article.title,
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        )
-                        Text(
-                            (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(horizontal = 16.dp),
-                        )
-                        if (canSwipe) {
+                    // Inhalt klebt am Finger beim Ziehen
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { translationY = swipeOffsetPx },
+                    ) {
+                        Column(Modifier.fillMaxSize()) {
                             Text(
-                                stringResource(R.string.gesture_hint),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                article.title,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                            Text(
+                                (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
+                            if (canSwipe) {
+                                Text(
+                                    stringResource(R.string.gesture_hint),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                )
+                            }
+                            if (article.summaryHtml.isNotBlank()) {
+                                ArticleWebView(
+                                    html = article.summaryHtml,
+                                    baseUrl = article.url,
+                                    modifier = Modifier.fillMaxSize().padding(top = 4.dp),
+                                )
+                            } else if (article.url.isNotBlank()) {
+                                Column(Modifier.padding(16.dp)) {
+                                    Text("Kein Inhalt im Feed vorhanden.")
+                                    Spacer(Modifier.height(12.dp))
+                                    Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
+                                }
+                            }
+                        }
+
+                        // Die Lücke oben/unten mit Ziel-Anzeige
+                        val gap = with(density) { swipeOffsetPx.toDp() }.coerceAtLeast(0.dp)
+                        if (swipeDirection == SwipeDirection.DOWN && gap > 0.dp) {
+                            SwipeGap(
+                                direction = SwipeDirection.DOWN,
+                                progress = swipeOffsetPx / thresholdPx,
+                                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(gap),
                             )
                         }
-                        if (article.summaryHtml.isNotBlank()) {
-                            ArticleWebView(
-                                html = article.summaryHtml,
-                                baseUrl = article.url,
-                                modifier = Modifier.fillMaxSize().padding(top = 4.dp),
+                        if (swipeDirection == SwipeDirection.UP && gap > 0.dp) {
+                            SwipeGap(
+                                direction = SwipeDirection.UP,
+                                progress = swipeOffsetPx / thresholdPx,
+                                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(gap),
                             )
-                        } else if (article.url.isNotBlank()) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text("Kein Inhalt im Feed vorhanden.")
-                                Spacer(Modifier.height(12.dp))
-                                Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
-                            }
                         }
                     }
 
                     if (canSwipe) {
                         SwipeZone(
                             direction = SwipeDirection.DOWN,
-                            height = zoneHeight,
-                            thresholdPx = thresholdPx,
-                            onProgress = { topProgress = it },
-                            onReset = { topProgress = 0f; topDirection = SwipeDirection.NONE },
-                            onTrigger = {
-                                topProgress = 0f; topDirection = SwipeDirection.NONE
-                                internalBrowserUrl = article.url
+                            height = 48.dp,
+                            onDelta = {
+                                swipeDirection = SwipeDirection.DOWN
+                                swipeOffsetPx = (swipeOffsetPx + it).coerceIn(0f, maxDragPx)
+                            },
+                            onEnd = {
+                                if (swipeOffsetPx >= thresholdPx) {
+                                    swipeOffsetPx = 0f
+                                    swipeDirection = SwipeDirection.NONE
+                                    openInternalViewer(article)
+                                } else {
+                                    animateSwipeReset()
+                                }
                             },
                             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
                         )
                         SwipeZone(
                             direction = SwipeDirection.UP,
-                            height = zoneHeight,
-                            thresholdPx = thresholdPx,
-                            onProgress = { bottomProgress = it },
-                            onReset = { bottomProgress = 0f; bottomDirection = SwipeDirection.NONE },
-                            onTrigger = {
-                                bottomProgress = 0f; bottomDirection = SwipeDirection.NONE
-                                openExternal(article.url)
+                            height = 48.dp,
+                            onDelta = {
+                                swipeDirection = SwipeDirection.UP
+                                swipeOffsetPx = (swipeOffsetPx + it).coerceIn(0f, maxDragPx)
+                            },
+                            onEnd = {
+                                if (swipeOffsetPx >= thresholdPx) {
+                                    swipeOffsetPx = 0f
+                                    swipeDirection = SwipeDirection.NONE
+                                    openExternal(article.url)
+                                } else {
+                                    animateSwipeReset()
+                                }
                             },
                             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
                         )
