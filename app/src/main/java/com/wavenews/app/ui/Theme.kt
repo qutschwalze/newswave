@@ -32,17 +32,17 @@ private val DarkColors = darkColorScheme(
 )
 
 /**
- * Folgt dem System-Dark-Mode; nutzt Material You dynamische Farben (Android 12+),
- * sonst die Wave-Palette.
+ * darkTheme = null → folgt dem System; true/false → erzwungen hell/dunkel.
+ * Nutzt Material You dynamische Farben (Android 12+), sonst die Wave-Palette.
  */
 @Composable
-fun NewsWaveTheme(content: @Composable () -> Unit) {
-    val darkTheme = isSystemInDarkTheme()
+fun NewsWaveTheme(darkTheme: Boolean? = null, content: @Composable () -> Unit) {
+    val useDark = darkTheme ?: isSystemInDarkTheme()
     val context = LocalContext.current
     val colorScheme = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        darkTheme -> DarkColors
+            if (useDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        useDark -> DarkColors
         else -> LightColors
     }
     MaterialTheme(colorScheme = colorScheme, content = content)

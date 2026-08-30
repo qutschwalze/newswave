@@ -107,6 +107,7 @@ import com.wavenews.app.data.Account
 import com.wavenews.app.data.AppSettings
 import com.wavenews.app.data.BackBehavior
 import com.wavenews.app.data.CardSize
+import com.wavenews.app.data.ThemeMode
 import com.wavenews.app.data.db.ArticleEntity
 import com.wavenews.app.data.db.FeedEntity
 import java.text.DateFormat
@@ -256,6 +257,7 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
     fun setCardSize(value: CardSize) = viewModelScope.launch { app.settings.setCardSize(value) }
     fun setTopicImages(value: Boolean) = viewModelScope.launch { app.settings.setTopicImages(value) }
     fun setSwipeActions(value: Boolean) = viewModelScope.launch { app.settings.setSwipeActions(value) }
+    fun setThemeMode(value: ThemeMode) = viewModelScope.launch { app.settings.setThemeMode(value) }
 
     // --- Feed-Verwaltung (direkt aus der App, gegen FreshRSS) ---
 
@@ -468,32 +470,30 @@ private fun NewsScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text(stringResource(R.string.drawer_categories), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
-                NavigationDrawerItem(
-                    label = { Text(stringResource(R.string.drawer_all)) },
-                    selected = state.selectedFeed == null && state.selectedCategory == null,
-                    onClick = { vm.selectFeed(null); scope.launch { drawerState.close() } },
-                )
-                categories.forEach { category ->
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(stringResource(R.string.drawer_categories), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
                     NavigationDrawerItem(
-                        label = { Text(category) },
-                        selected = state.selectedCategory == category,
-                        onClick = { vm.selectCategory(category); scope.launch { drawerState.close() } },
+                        label = { Text(stringResource(R.string.drawer_all)) },
+                        selected = state.selectedFeed == null && state.selectedCategory == null,
+                        onClick = { vm.selectFeed(null); scope.launch { drawerState.close() } },
                     )
+                    categories.forEach { category ->
+                        NavigationDrawerItem(
+                            label = { Text(category) },
+                            selected = state.selectedCategory == category,
+                            onClick = { vm.selectCategory(category); scope.launch { drawerState.close() } },
+                        )
+                    }
+                    Text(stringResource(R.string.drawer_feeds), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                    feeds.forEach { feed ->
+                        NavigationDrawerItem(
+                            label = { Text(feed.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            selected = state.selectedFeed == feed.id,
+                            onClick = { vm.selectFeed(feed.id); scope.launch { drawerState.close() } },
+                        )
+                    }
+                    // Feed-Verwaltung ist jetzt in den Einstellungen (⋯)
                 }
-                Text(stringResource(R.string.drawer_feeds), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
-                feeds.forEach { feed ->
-                    NavigationDrawerItem(
-                        label = { Text(feed.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        selected = state.selectedFeed == feed.id,
-                        onClick = { vm.selectFeed(feed.id); scope.launch { drawerState.close() } },
-                    )
-                }
-                NavigationDrawerItem(
-                    label = { Text(stringResource(R.string.drawer_manage)) },
-                    selected = false,
-                    onClick = { showManage = true; scope.launch { drawerState.close() } },
-                )
             }
         },
     ) {
@@ -570,6 +570,7 @@ private fun NewsScreen(
             vm = vm,
             onDismiss = { showSettings = false },
             onLogoutRequest = { showSettings = false; showLogout = true },
+            onManageFeeds = { showSettings = false; showManage = true },
         )
     }
 
@@ -599,10 +600,16 @@ private fun SettingsSheet(
     vm: MainViewModel,
     onDismiss: () -> Unit,
     onLogoutRequest: () -> Unit,
+    onManageFeeds: () -> Unit,
 ) {
     val githubContext = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+        Column(
+            Modifier
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .verticalScroll(rememberScrollState())
+        ) {
             Text(stringResource(R.string.settings_title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
 
@@ -630,6 +637,22 @@ private fun SettingsSheet(
             }
             Spacer(Modifier.height(8.dp))
 
+            // --- Erscheinungsbild: System / Hell / Dunkel ---
+            Text(stringResource(R.string.settings_theme), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Row(Modifier.fillMaxWidth().clickable { vm.setThemeMode(ThemeMode.SYSTEM) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = settings.themeMode == ThemeMode.SYSTEM, onClick = { vm.setThemeMode(ThemeMode.SYSTEM) })
+                Text(stringResource(R.string.theme_system))
+            }
+            Row(Modifier.fillMaxWidth().clickable { vm.setThemeMode(ThemeMode.LIGHT) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = settings.themeMode == ThemeMode.LIGHT, onClick = { vm.setThemeMode(ThemeMode.LIGHT) })
+                Text(stringResource(R.string.theme_light))
+            }
+            Row(Modifier.fillMaxWidth().clickable { vm.setThemeMode(ThemeMode.DARK) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = settings.themeMode == ThemeMode.DARK, onClick = { vm.setThemeMode(ThemeMode.DARK) })
+                Text(stringResource(R.string.theme_dark))
+            }
+            Spacer(Modifier.height(8.dp))
+
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.settings_topic), modifier = Modifier.weight(1f))
                 Switch(checked = settings.topicImages, onCheckedChange = { vm.setTopicImages(it) })
@@ -639,6 +662,15 @@ private fun SettingsSheet(
                 Switch(checked = settings.swipeActions, onCheckedChange = { vm.setSwipeActions(it) })
             }
             Spacer(Modifier.height(16.dp))
+
+            // --- Feeds verwalten (aus dem Drawer hierher umgezogen) ---
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onManageFeeds).padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.drawer_manage), modifier = Modifier.weight(1f))
+                Text("→", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
 
             // --- Über: Version + GitHub ---
             Text(stringResource(R.string.settings_about), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)

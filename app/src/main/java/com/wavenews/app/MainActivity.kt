@@ -5,6 +5,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.wavenews.app.data.ThemeMode
 import com.wavenews.app.ui.MainScreen
 import com.wavenews.app.ui.NewsWaveTheme
 
@@ -15,7 +18,15 @@ class MainActivity : ComponentActivity() {
         handleDeepLink(intent)
         enableEdgeToEdge()
         setContent {
-            NewsWaveTheme {
+            val app = applicationContext as WaveNewsApp
+            val settings by app.settings.settings.collectAsState(initial = null)
+            NewsWaveTheme(
+                darkTheme = when (settings?.themeMode) {
+                    ThemeMode.DARK -> true
+                    ThemeMode.LIGHT -> false
+                    else -> null // SYSTEM
+                },
+            ) {
                 MainScreen()
             }
         }
