@@ -29,13 +29,14 @@
     <string name="card_medium">Mittel (schmales Bild)</string>
     <string name="card_small">Klein (Kompaktliste)</string>
     <string name="settings_back">Back-Verhalten</string>
-    <string name="back_chain">Kette: Übersicht → News-Kategorie → Beenden</string>
+    <string name="back_chain">Kette: Übersicht → Menü → Beenden</string>
+    <string name="swipe_internal">Interner Browser</string>
+    <string name="swipe_external">Externer Browser</string>
     <string name="back_direct">Zurück beendet direkt</string>
     <string name="settings_topic">Themen-Bilder (Logos für Artikel ohne Bild)</string>
     <string name="settings_swipe">Swipe-Aktionen im Artikel</string>
     <string name="gesture_hint">↓ Volltext im internen Browser · ↑ im bevorzugten Browser</string>
     <string name="internal_browser">Interner Browser</string>
     <string name="toast_main">Hauptübersicht</string>
-    <string name="toast_category">Kategorie: %1$s</string>
     <string name="toast_external">Öffne im Browser …</string>
 </resources>

@@ -6,10 +6,18 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -50,6 +58,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -64,6 +73,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,6 +81,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -368,6 +379,11 @@ private fun NewsScreen(
     BackHandler(enabled = state.account != null) {
         when {
             state.openArticle != null -> vm.closeArticle()
+            drawerState.isOpen -> {
+                // Menü war offen (Stufe 2): schließen und beenden
+                scope.launch { drawerState.close() }
+                context.findActivity()?.finishAffinity()
+            }
             settings.backBehavior == BackBehavior.DIRECT -> context.findActivity()?.finishAffinity()
             state.selectedFeed != null || state.selectedCategory != null -> {
                 // 1. Stufe: zurück zur Hauptübersicht
@@ -376,16 +392,9 @@ private fun NewsScreen(
                 Toast.makeText(context, context.getString(R.string.toast_main), Toast.LENGTH_SHORT).show()
             }
             backStage <= 1 -> {
-                // 2. Stufe: in die News-Kategorie springen
-                val newsCategory = categories.firstOrNull { it.contains("nachricht", ignoreCase = true) }
-                    ?: categories.firstOrNull()
-                if (newsCategory != null) {
-                    vm.selectCategory(newsCategory)
-                    backStage = 2
-                    Toast.makeText(context, context.getString(R.string.toast_category, newsCategory), Toast.LENGTH_SHORT).show()
-                } else {
-                    context.findActivity()?.finishAffinity()
-                }
+                // 2. Stufe: linkes Seitenmenü öffnen
+                scope.launch { drawerState.open() }
+                backStage = 2
             }
             else -> context.findActivity()?.finishAffinity() // 3. Stufe: beenden
         }
@@ -735,7 +744,86 @@ private fun SmallThumb(article: ArticleEntity) {
 
 // --- Artikel-Detail mit Swipe-Aktionen + internem Browser ---
 
-private val SWIPE_THRESHOLD = 160.dp
+/** Swipe-Richtung im Detail (DOWN = von oben nach unten = intern, UP = extern). */
+enum class SwipeDirection { NONE, DOWN, UP }
+
+/**
+ * Kleiner animierter Hinweis an der Kante: erscheint beim Ziehen, zeigt Ziel + Fortschritt.
+ * progress >= 1 → Farbe wechselt auf primary (Auslöseschwelle erreicht).
+ */
+@Composable
+private fun SwipeIndicator(direction: SwipeDirection, progress: Float, modifier: Modifier = Modifier) {
+    AnimatedVisibility(
+        visible = direction != SwipeDirection.NONE && progress > 0.02f,
+        enter = fadeIn() + slideInVertically { if (direction == SwipeDirection.DOWN) -it / 2 else it / 2 },
+        exit = fadeOut(),
+        modifier = modifier,
+    ) {
+        Surface(
+            color = if (progress >= 1f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+            shadowElevation = 4.dp,
+        ) {
+            Column(
+                Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    when (direction) {
+                        SwipeDirection.DOWN -> "↓ " + stringResource(R.string.swipe_internal)
+                        SwipeDirection.UP -> "↑ " + stringResource(R.string.swipe_external)
+                        SwipeDirection.NONE -> ""
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (progress >= 1f) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth(0.7f).height(3.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Schmale Gestenzone an der Kante (nur diese konsumiert Touch-Events —
+ * der Artikelinhalt dazwischen bleibt normal scrollbar).
+ */
+@Composable
+private fun SwipeZone(
+    direction: SwipeDirection,
+    height: androidx.compose.ui.unit.Dp,
+    thresholdPx: Float,
+    onProgress: (Float) -> Unit,
+    onReset: () -> Unit,
+    onTrigger: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier
+            .height(height)
+            .pointerInput(direction) {
+                var pull = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { pull = 0f },
+                    onVerticalDrag = { change, amount ->
+                        // DOWN-Zone reagiert auf positives Delta, UP-Zone auf negatives
+                        val effective = if (direction == SwipeDirection.DOWN) amount else -amount
+                        pull = (pull + effective).coerceAtLeast(0f)
+                        onProgress(pull / thresholdPx)
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        if (pull >= thresholdPx) onTrigger() else onReset()
+                        pull = 0f
+                    },
+                    onDragCancel = { onReset(); pull = 0f },
+                )
+            },
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -780,64 +868,88 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
             )
         },
     ) { padding ->
-        if (internalBrowserUrl != null) {
-            InternalBrowserScreen(url = internalBrowserUrl!!, onClose = { internalBrowserUrl = null })
-        } else {
-            Column(
-                Modifier
-                    .padding(padding)
-                    .fillMaxSize()
-                    .then(
-                        if (settings.swipeActions) Modifier.pointerInput(article.id) {
-                            var downPull = 0f // von oben nach unten
-                            var upPull = 0f   // von unten nach oben
-                            detectVerticalDragGestures(
-                                onDragStart = { downPull = 0f; upPull = 0f },
-                                onVerticalDrag = { change, amount ->
-                                    if (amount > 0) downPull += amount else upPull -= amount
-                                    change.consume()
-                                },
-                                onDragEnd = {
-                                    val threshold = SWIPE_THRESHOLD.toPx()
-                                    when {
-                                        downPull > threshold && article.url.isNotBlank() -> internalBrowserUrl = article.url
-                                        upPull > threshold && article.url.isNotBlank() -> openExternal(article.url)
-                                    }
-                                },
+        val density = LocalDensity.current
+        val zoneHeight = 52.dp
+        val thresholdPx = with(density) { 110.dp.toPx() }
+        val canSwipe = settings.swipeActions && article.url.isNotBlank()
+
+        var topProgress by remember(article.id) { mutableFloatStateOf(0f) }
+        var topDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+        var bottomProgress by remember(article.id) { mutableFloatStateOf(0f) }
+        var bottomDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+
+        Crossfade(targetState = internalBrowserUrl, label = "detail-crossfade") { browserUrl ->
+            if (browserUrl != null) {
+                InternalBrowserScreen(url = browserUrl, onClose = { internalBrowserUrl = null })
+            } else {
+                Box(
+                    Modifier
+                        .padding(padding)
+                        .fillMaxSize(),
+                ) {
+                    SwipeIndicator(direction = topDirection, progress = topProgress.coerceIn(0f, 1f), modifier = Modifier.align(Alignment.TopCenter))
+                    SwipeIndicator(direction = bottomDirection, progress = bottomProgress.coerceIn(0f, 1f), modifier = Modifier.align(Alignment.BottomCenter))
+
+                    Column(Modifier.fillMaxSize()) {
+                        Text(
+                            article.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                        Text(
+                            (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                        if (canSwipe) {
+                            Text(
+                                stringResource(R.string.gesture_hint),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             )
-                        } else Modifier,
-                    ),
-            ) {
-                Text(
-                    article.title,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-                Text(
-                    (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-                if (settings.swipeActions && article.url.isNotBlank()) {
-                    Text(
-                        stringResource(R.string.gesture_hint),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    )
-                }
-                if (article.summaryHtml.isNotBlank()) {
-                    ArticleWebView(
-                        html = article.summaryHtml,
-                        baseUrl = article.url,
-                        modifier = Modifier.fillMaxSize().padding(top = 4.dp),
-                    )
-                } else if (article.url.isNotBlank()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Kein Inhalt im Feed vorhanden.")
-                        Spacer(Modifier.height(12.dp))
-                        Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
+                        }
+                        if (article.summaryHtml.isNotBlank()) {
+                            ArticleWebView(
+                                html = article.summaryHtml,
+                                baseUrl = article.url,
+                                modifier = Modifier.fillMaxSize().padding(top = 4.dp),
+                            )
+                        } else if (article.url.isNotBlank()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("Kein Inhalt im Feed vorhanden.")
+                                Spacer(Modifier.height(12.dp))
+                                Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
+                            }
+                        }
+                    }
+
+                    if (canSwipe) {
+                        SwipeZone(
+                            direction = SwipeDirection.DOWN,
+                            height = zoneHeight,
+                            thresholdPx = thresholdPx,
+                            onProgress = { topProgress = it },
+                            onReset = { topProgress = 0f; topDirection = SwipeDirection.NONE },
+                            onTrigger = {
+                                topProgress = 0f; topDirection = SwipeDirection.NONE
+                                internalBrowserUrl = article.url
+                            },
+                            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
+                        )
+                        SwipeZone(
+                            direction = SwipeDirection.UP,
+                            height = zoneHeight,
+                            thresholdPx = thresholdPx,
+                            onProgress = { bottomProgress = it },
+                            onReset = { bottomProgress = 0f; bottomDirection = SwipeDirection.NONE },
+                            onTrigger = {
+                                bottomProgress = 0f; bottomDirection = SwipeDirection.NONE
+                                openExternal(article.url)
+                            },
+                            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+                        )
                     }
                 }
             }
@@ -867,13 +979,23 @@ private fun InternalBrowserScreen(url: String, onClose: () -> Unit) {
             }) { Text("↗") }
         }
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             factory = { ctx ->
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    settings.setSupportMultipleWindows(true)
                     settings.loadWithOverviewMode = true
                     settings.useWideViewPort = true
+                    settings.cacheMode = WebSettings.LOAD_DEFAULT
+                    settings.userAgentString = settings.userAgentString + " NewsWave/0.4"
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                     webViewClient = WebViewClient()
+                    webChromeClient = WebChromeClient()
                 }
             },
             update = { it.loadUrl(url) },
