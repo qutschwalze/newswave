@@ -13,14 +13,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -73,14 +69,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -89,6 +89,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -805,37 +806,6 @@ private fun SwipeGap(direction: SwipeDirection, progress: Float, modifier: Modif
     }
 }
 
-/**
- * Schmale Gestenzone an der Kante (nur diese konsumiert Touch-Events —
- * der Artikelinhalt dazwischen bleibt normal scrollbar). Das Ziehen verschiebt
- * den gesamten Inhalt ("Artikel klebt am Finger") und öffnet die Lücke.
- */
-@Composable
-private fun SwipeZone(
-    direction: SwipeDirection,
-    height: androidx.compose.ui.unit.Dp,
-    onDelta: (Float) -> Unit,
-    onEnd: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier
-            .height(height)
-            .pointerInput(direction) {
-                detectVerticalDragGestures(
-                    onVerticalDrag = { change, amount ->
-                        // DOWN-Zone: positiv ziehen; UP-Zone: negativ ziehen
-                        val effective = if (direction == SwipeDirection.DOWN) amount else -amount
-                        if (effective > 0f) onDelta(effective)
-                        change.consume()
-                    },
-                    onDragEnd = { onEnd() },
-                    onDragCancel = { onEnd() },
-                )
-            },
-    )
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
@@ -889,22 +859,81 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     ) { padding ->
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
-        val thresholdPx = with(density) { 120.dp.toPx() }
-        val maxDragPx = with(density) { 260.dp.toPx() }
+        val thresholdPx = with(density) { 130.dp.toPx() }
+        val maxDragPx = with(density) { 320.dp.toPx() }
         val canSwipe = settings.swipeActions && article.url.isNotBlank()
 
-        // Ziehen verschiebt den Inhalt ("Artikel klebt am Finger"); die Lücke
-        // oben (intern) bzw. unten (extern) zeigt das Ziel.
-        var swipeOffsetPx by remember(article.id) { mutableFloatStateOf(0f) }
-        var swipeDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+        // "Artikel klebt am Finger": Der Inhalt verschiebt sich mit dem Finger und
+        // öffnet oben (interner Viewer) bzw. unten (externer Browser) eine Lücke.
+        // Der Pull funktioniert an JEDER Stelle des Screens: Er ist die Rest-Bewegung
+        // der LazyColumn an ihrem Anschlag (wie Pull-to-Refresh) — deshalb muss der
+        // Artikelinhalt IN der LazyColumn liegen und die Liste kennt ihre Grenzen.
+        var pullPx by remember(article.id) { mutableFloatStateOf(0f) }
+        var pullDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
+        var contentHeightPx by remember(article.id) { mutableFloatStateOf(0f) }
 
-        fun animateSwipeReset() {
+        fun resetPullImmediately() {
+            pullPx = 0f
+            pullDirection = SwipeDirection.NONE
+        }
+
+        fun animatePullReset() {
             scope.launch {
-                val anim = androidx.compose.animation.core.Animatable(swipeOffsetPx)
-                anim.animateTo(0f, androidx.compose.animation.core.tween(200)) {
-                    swipeOffsetPx = value // Receiver-Property des Animatable
+                val anim = androidx.compose.animation.core.Animatable(pullPx)
+                anim.animateTo(0f, androidx.compose.animation.core.tween(220)) {
+                    pullPx = value // Receiver-Property des Animatable
                 }
-                swipeDirection = SwipeDirection.NONE
+                pullDirection = SwipeDirection.NONE
+            }
+        }
+
+        val listState = rememberLazyListState()
+        val nestedScrollConnection = remember(article.id, canSwipe) {
+            object : NestedScrollConnection {
+                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                    // Beim Zurückfedern die Bewegung begleiten
+                    if (pullPx > 0f && available.y < 0f) {
+                        val consumed = available.y.coerceAtLeast(-pullPx)
+                        pullPx += consumed
+                        if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
+                        return Offset(0f, consumed)
+                    }
+                    return Offset.Zero
+                }
+
+                override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                    if (!canSwipe) return Offset.Zero
+                    val rest = available.y
+                    if (rest > 0f) {
+                        // Ziehen über den oberen Anschlag hinaus → Lücke oben (interner Viewer)
+                        if (pullDirection == SwipeDirection.NONE) pullDirection = SwipeDirection.DOWN
+                        if (pullDirection == SwipeDirection.DOWN) pullPx = (pullPx + rest).coerceIn(0f, maxDragPx)
+                        return Offset(0f, rest)
+                    }
+                    if (rest < 0f) {
+                        // Ziehen über den unteren Anschlag hinaus → Lücke unten (externer Browser)
+                        if (pullDirection == SwipeDirection.NONE) pullDirection = SwipeDirection.UP
+                        if (pullDirection == SwipeDirection.UP) pullPx = (pullPx - rest).coerceIn(0f, maxDragPx)
+                        return Offset(0f, rest)
+                    }
+                    return Offset.Zero
+                }
+
+                override suspend fun onPreFling(available: Velocity): Velocity {
+                    if (pullPx >= thresholdPx) {
+                        val dir = pullDirection
+                        resetPullImmediately()
+                        when (dir) {
+                            SwipeDirection.DOWN -> openInternalViewer(article)
+                            SwipeDirection.UP -> openExternal(article.url)
+                            SwipeDirection.NONE -> Unit
+                        }
+                    } else if (pullPx > 0f) {
+                        animatePullReset()
+                    }
+                    // Fling nicht konsumieren — die Liste darf weitergleit werden
+                    return Velocity.Zero
+                }
             }
         }
 
@@ -917,102 +946,77 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                         .padding(padding)
                         .fillMaxSize(),
                 ) {
-                    // Inhalt klebt am Finger beim Ziehen
+                    // Die Lücke oben/unten mit Ziel-Anzeige (hinter dem Inhalt)
+                    val gap = with(density) { pullPx.toDp() }.coerceAtLeast(0.dp)
+                    if (pullDirection == SwipeDirection.DOWN && gap > 0.dp) {
+                        SwipeGap(
+                            direction = SwipeDirection.DOWN,
+                            progress = pullPx / thresholdPx,
+                            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(gap),
+                        )
+                    }
+                    if (pullDirection == SwipeDirection.UP && gap > 0.dp) {
+                        SwipeGap(
+                            direction = SwipeDirection.UP,
+                            progress = pullPx / thresholdPx,
+                            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(gap),
+                        )
+                    }
+
+                    // Der Inhalt klebt am Finger
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .graphicsLayer { translationY = swipeOffsetPx },
+                            .graphicsLayer { translationY = pullPx },
                     ) {
-                        Column(Modifier.fillMaxSize()) {
-                            Text(
-                                article.title,
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            )
-                            Text(
-                                (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.padding(horizontal = 16.dp),
-                            )
-                            if (canSwipe) {
-                                Text(
-                                    stringResource(R.string.gesture_hint),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                )
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .nestedScroll(nestedScrollConnection)
+                                .onSizeChanged { contentHeightPx = it.height.toFloat() },
+                        ) {
+                            item {
+                                Column {
+                                    Text(
+                                        article.title,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    )
+                                    Text(
+                                        (article.author?.let { "$it · " } ?: "") + DateFormat.getDateTimeInstance(DateFormat.LONG, DateFormat.SHORT).format(Date(article.published * 1000)),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                    )
+                                    if (canSwipe) {
+                                        Text(
+                                            stringResource(R.string.gesture_hint),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                        )
+                                    }
+                                }
                             }
                             if (article.summaryHtml.isNotBlank()) {
-                                ArticleWebView(
-                                    html = article.summaryHtml,
-                                    baseUrl = article.url,
-                                    modifier = Modifier.fillMaxSize().padding(top = 4.dp),
-                                )
+                                item {
+                                    ArticleWebView(
+                                        html = article.summaryHtml,
+                                        baseUrl = article.url,
+                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                    )
+                                }
                             } else if (article.url.isNotBlank()) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text("Kein Inhalt im Feed vorhanden.")
-                                    Spacer(Modifier.height(12.dp))
-                                    Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
+                                item {
+                                    Column(Modifier.padding(16.dp)) {
+                                        Text("Kein Inhalt im Feed vorhanden.")
+                                        Spacer(Modifier.height(12.dp))
+                                        Button(onClick = { openExternal(article.url) }) { Text(stringResource(R.string.detail_fulltext)) }
+                                    }
                                 }
                             }
                         }
-
-                        // Die Lücke oben/unten mit Ziel-Anzeige
-                        val gap = with(density) { swipeOffsetPx.toDp() }.coerceAtLeast(0.dp)
-                        if (swipeDirection == SwipeDirection.DOWN && gap > 0.dp) {
-                            SwipeGap(
-                                direction = SwipeDirection.DOWN,
-                                progress = swipeOffsetPx / thresholdPx,
-                                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().height(gap),
-                            )
-                        }
-                        if (swipeDirection == SwipeDirection.UP && gap > 0.dp) {
-                            SwipeGap(
-                                direction = SwipeDirection.UP,
-                                progress = swipeOffsetPx / thresholdPx,
-                                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(gap),
-                            )
-                        }
-                    }
-
-                    if (canSwipe) {
-                        SwipeZone(
-                            direction = SwipeDirection.DOWN,
-                            height = 48.dp,
-                            onDelta = {
-                                swipeDirection = SwipeDirection.DOWN
-                                swipeOffsetPx = (swipeOffsetPx + it).coerceIn(0f, maxDragPx)
-                            },
-                            onEnd = {
-                                if (swipeOffsetPx >= thresholdPx) {
-                                    swipeOffsetPx = 0f
-                                    swipeDirection = SwipeDirection.NONE
-                                    openInternalViewer(article)
-                                } else {
-                                    animateSwipeReset()
-                                }
-                            },
-                            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
-                        )
-                        SwipeZone(
-                            direction = SwipeDirection.UP,
-                            height = 48.dp,
-                            onDelta = {
-                                swipeDirection = SwipeDirection.UP
-                                swipeOffsetPx = (swipeOffsetPx + it).coerceIn(0f, maxDragPx)
-                            },
-                            onEnd = {
-                                if (swipeOffsetPx >= thresholdPx) {
-                                    swipeOffsetPx = 0f
-                                    swipeDirection = SwipeDirection.NONE
-                                    openExternal(article.url)
-                                } else {
-                                    animateSwipeReset()
-                                }
-                            },
-                            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
-                        )
                     }
                 }
             }
