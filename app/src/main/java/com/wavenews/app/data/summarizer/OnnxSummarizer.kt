@@ -4,337 +4,208 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /**
- * Abstraktive Zusammenfassung mit T5-small (ONNX, quantisiert) — komplett on-device.
+ * On-device abstraktive Zusammenfassung mit T5-small (ONNX, quantisiert).
  *
- * Architektur (in Python end-to-end validiert, 1:1-Port):
- *  - Encoder: input_ids + attention_mask → last_hidden_state [1, seq, 512]
- *  - Decoder-Schritt 1: decoder_model (ohne Past) mit input_ids=[[padId]];
- *    liefert Logits + 24 KV-Tensoren (12 decoder + 12 encoder)
- *  - Decoder-Schritte 2..n: decoder_with_past_model; nur die 12 Decoder-KV-Tensoren
- *    werden ersetzt, die 12 Encoder-KV-Tensoren bleiben vom ersten Schritt konstant
- *  - Greedy-Decoding bis </s> (id=1) oder max_new_tokens
+ * Pipeline (1:1-Port der validierten Python-Variante):
+ *  1. Encoder → hidden [1, seq, 512]
+ *  2. Decoder (no-past) → logits + 24 KV-Tensoren (12 Decoder + 12 Encoder)
+ *  3. Decoder (with-past) → logits + 12 Decoder-KV; Encoder-KVs bleiben konstant
+ *  4. Greedy-Decoding bis </s> oder max_new_tokens
  *
- * KV-Caches werden als Kopien gehalten (eigene OnnxTensors), damit die Result-Objekte
- * der Sessions direkt nach jedem Schritt geschlossen werden können (begrenzter RAM).
- *
- * Modell-Dateien (~118 MB, Xenova/t5-small quantisiert) werden bei Aktivierung in den
- * Einstellungen einmalig nach filesDir/onnx/ geladen.
+ * KV-Caches als FloatArrays — keine Tensor-Lebenszeit-Probleme.
  */
 class OnnxSummarizer private constructor(
     private val env: OrtEnvironment,
     private val encoder: OrtSession,
-    private val decoderStep1: OrtSession,
+    private val decoderNoPast: OrtSession,
     private val decoderWithPast: OrtSession,
     private val tokenizer: T5UnigramTokenizer,
 ) {
+    /** Ein FloatArray-Cache-Eintrag: name = past_key_values.*, shape + data als FloatBuffer. */
+    private data class KVCopy(val name: String, val shape: LongArray, val data: FloatArray)
 
-    /** Liefert die Zusammenfassung oder null bei Misserfolg. Läuft im aufrufenden IO-Context. */
-    suspend fun summarize(text: String, maxNewTokens: Int = 64): String? = withContext(Dispatchers.Default) {
-        try {
-            summarizeInternal(text, maxNewTokens)
-        } catch (_: Exception) {
-            null
-        }
+    fun summarize(text: String, maxNewTokens: Int = 64): String? = try {
+        summarizeInternal(text, maxNewTokens)
+    } catch (e: Exception) {
+        Log.e(TAG, "Summarize failed", e)
+        null
     }
 
     private fun summarizeInternal(text: String, maxNewTokens: Int): String? {
-        val sourceIds = tokenizer.encode("summarize: " + text.take(2000)).take(MAX_SOURCE_TOKENS)
-        if (sourceIds.isEmpty()) return null
-        val seqLen = sourceIds.size.toLong()
-        val sourceArray = LongArray(sourceIds.size) { sourceIds[it].toLong() }
+        // 1) Tokenisieren
+        val src = tokenizer.encode("summarize: " + text.take(2000)).take(MAX_SOURCE_TOKENS)
+        if (src.isEmpty()) return null
+        val seqLen = src.size.toLong()
+        val srcArr = LongArray(src.size) { src[it].toLong() }
+        val maskArr = LongArray(src.size) { 1L }
 
-        val held = ArrayList<AutoCloseable>(32)
-        try {
-            // --- Encoder ---
-            val hidden: Array<Array<FloatArray>> = encoder.run(
-                mapOf(
-                    "input_ids" to longTensor(sourceArray, longArrayOf(1, seqLen)).also { held.add(it) },
-                    "attention_mask" to longTensor(LongArray(seqLen.toInt()) { 1L }, longArrayOf(1, seqLen)).also { held.add(it) },
-                ),
-            ).use { results ->
+        // 2) Encoder → hidden [1, seq, 512]
+        val hidden: FloatArray; val hiddenShape: LongArray
+        run {
+            val ids = OnnxTensor.createTensor(env, LongBuffer.wrap(srcArr), longArrayOf(1, seqLen))
+            val msk = OnnxTensor.createTensor(env, LongBuffer.wrap(maskArr), longArrayOf(1, seqLen))
+            try {
+                val res = encoder.run(mapOf("input_ids" to ids, "attention_mask" to msk))
                 @Suppress("UNCHECKED_CAST")
-                results[0].value as Array<Array<FloatArray>>
-            }
-            val hiddenTensor = floatTensor3D(hidden).also { held.add(it) }
+                val h = (res[0].value as Array<Array<FloatArray>>)[0]
+                hiddenShape = longArrayOf(1, h.size.toLong(), h[0].size.toLong())
+                hidden = FloatArray(h.size * h[0].size); var p = 0
+                for (t in h) for (v in t) hidden[p++] = v
+                res.close()
+            } finally { ids.close(); msk.close() }
+        }
 
-            // --- Decoder-Schritt 1 (ohne Past) ---
-            val step1 = decoderStep1.run(
-                mapOf(
-                    "input_ids" to longTensor(longArrayOf(PAD_ID), longArrayOf(1, 1)).also { held.add(it) },
-                    "encoder_hidden_states" to hiddenTensor,
-                    "encoder_attention_mask" to held[1] as OnnxTensor,
-                ),
-            )
-            val logits1 = step1.toFloatRows()
-            val kvCache = LinkedHashMap<String, OnnxTensor>(24)
-            decoderStep1.outputNames.toList().forEachIndexed { idx, name ->
-                if (idx > 0) kvCache[name.replace("present.", "past_key_values.")] = (step1[idx] as OnnxTensor).copy()
-            }
-            step1.close()
+        // 3) Decoder Schritt 1 (no-past) → 24 KV-Caches (FloatArrays)
+        val kvList: MutableList<KVCopy>
+        var last: Int
+        run {
+            val inpIds = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(0L)), longArrayOf(1, 1))
+            val encH = OnnxTensor.createTensor(env, FloatBuffer.wrap(hidden), hiddenShape)
+            val encM = OnnxTensor.createTensor(env, LongBuffer.wrap(maskArr), longArrayOf(1, seqLen))
+            try {
+                val res = decoderNoPast.run(mapOf("input_ids" to inpIds, "encoder_hidden_states" to encH, "encoder_attention_mask" to encM))
+                @Suppress("UNCHECKED_CAST")
+                val logits = (res[0].value as Array<Array<FloatArray>>)[0][0]
+                last = logits.indices.maxByOrNull { logits[it] }?.toInt() ?: 1
 
-            var last = argmax(logits1)
-            val generated = ArrayList<Int>(maxNewTokens)
-            if (last != EOS_ID) generated.add(last)
+                val names = decoderNoPast.outputNames.toList()
+                kvList = ArrayList(names.size - 1)
+                for (i in 1 until names.size) {
+                    @Suppress("UNCHECKED_CAST")
+                    val a = (res[i].value as Array<Array<Array<FloatArray>>>)[0]
+                    val h = a.size; val s = a[0].size; val d = a[0][0].size
+                    val flat = FloatArray(h * s * d); var p = 0
+                    for (hd in a) for (sl in hd) for (v in sl) flat[p++] = v
+                    kvList.add(KVCopy(names[i].replace("present.", "past_key_values."), longArrayOf(1, h.toLong(), s.toLong(), d.toLong()), flat))
+                }
+                res.close()
+            } finally { inpIds.close(); encH.close(); encM.close() }
+        }
 
-            // --- Decode-Loop (mit Past) ---
-            var guard = 0
-            while (last != EOS_ID && generated.size < maxNewTokens && guard++ < maxNewTokens + 2) {
-                val feeds = LinkedHashMap<String, OnnxTensor>(kvCache.size + 3)
-                feeds.putAll(kvCache)
-                feeds["input_ids"] = longTensor(longArrayOf(last.toLong()), longArrayOf(1, 1)).also { held.add(it) }
-                feeds["encoder_hidden_states"] = hiddenTensor
-                feeds["encoder_attention_mask"] = held[1] as OnnxTensor
+        // 4) Decode-Loop
+        val gen = ArrayList<Int>(maxNewTokens)
+        if (last != 1) gen.add(last)
+
+        var guard = 0
+        while (last != 1 && gen.size < maxNewTokens && guard++ < maxNewTokens + 2) {
+            val liveTensors = ArrayList<OnnxTensor>(kvList.size + 3)
+            try {
+                val feeds = HashMap<String, OnnxTensor>(kvList.size + 3)
+                for (kv in kvList) {
+                    val t = OnnxTensor.createTensor(env, FloatBuffer.wrap(kv.data.copyOf()), kv.shape)
+                    feeds[kv.name] = t; liveTensors.add(t)
+                }
+                val idT = OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(last.toLong())), longArrayOf(1, 1))
+                feeds["input_ids"] = idT; liveTensors.add(idT)
+                val encH = OnnxTensor.createTensor(env, FloatBuffer.wrap(hidden), hiddenShape)
+                feeds["encoder_hidden_states"] = encH; liveTensors.add(encH)
+                val encM = OnnxTensor.createTensor(env, LongBuffer.wrap(maskArr), longArrayOf(1, seqLen))
+                feeds["encoder_attention_mask"] = encM; liveTensors.add(encM)
 
                 val step = decoderWithPast.run(feeds)
-                val logits = step.toFloatRows()
-                // Nur decoder-*-Present ersetzen (encoder-* bleiben konstant)
-                decoderWithPast.outputNames.toList().forEachIndexed { idx, name ->
-                    if (idx > 0) {
-                        val pastName = name.replace("present.", "past_key_values.")
-                        if (pastName.contains(".decoder.")) {
-                            kvCache[pastName]?.close()
-                            kvCache[pastName] = (step[idx] as OnnxTensor).copy()
-                        }
+                @Suppress("UNCHECKED_CAST")
+                val logits = (step[0].value as Array<Array<FloatArray>>)[0][0]
+                last = logits.indices.maxByOrNull { logits[it] }?.toInt() ?: 1
+
+                // Nur Decoder-KVs updaten
+                val sNames = decoderWithPast.outputNames.toList()
+                for (i in 1 until sNames.size) {
+                    val pname = sNames[i].replace("present.", "past_key_values.")
+                    if (pname.contains(".decoder.")) {
+                        @Suppress("UNCHECKED_CAST")
+                        val a = (step[i].value as Array<Array<Array<FloatArray>>>)[0]
+                        val h = a.size; val s = a[0].size; val d = a[0][0].size
+                        val flat = FloatArray(h * s * d); var p = 0
+                        for (hd in a) for (sl in hd) for (v in sl) flat[p++] = v
+                        val idx = kvList.indexOfFirst { it.name == pname }
+                        if (idx >= 0) kvList[idx] = KVCopy(pname, longArrayOf(1, h.toLong(), s.toLong(), d.toLong()), flat)
                     }
                 }
                 step.close()
-
-                last = argmax(logits)
-                if (last != EOS_ID) generated.add(last)
-            }
-
-            if (generated.isEmpty()) return null
-            return tokenizer.decode(generated.toIntArray()).takeIf { it.isNotBlank() }
-        } finally {
-            held.forEach { runCatching { it.close() } }
+            } finally { liveTensors.forEach { runCatching { it.close() } } }
+            if (last != 1) gen.add(last)
         }
+
+        if (gen.isEmpty()) return null
+        return tokenizer.decode(gen.toIntArray()).takeIf { it.isNotBlank() }
     }
 
-    // Helper ---------------------------------------------------------------
+    fun close() { runCatching { encoder.close() }; runCatching { decoderNoPast.close() }; runCatching { decoderWithPast.close() } }
 
-    private fun longTensor(data: LongArray, shape: LongArray): OnnxTensor =
-        OnnxTensor.createTensor(env, LongBuffer.wrap(data), shape)
-
-    /** [1, seq, 512]-Floats aus nested Array, als eigener Tensor. */
-    private fun floatTensor3D(data: Array<Array<FloatArray>>): OnnxTensor {
-        val seq = data[0].size
-        val dim = data[0][0].size
-        val flat = FloatArray(seq * dim)
-        var p = 0
-        for (t in data[0]) for (v in t) flat[p++] = v
-        return OnnxTensor.createTensor(env, FloatBuffer.wrap(flat), longArrayOf(1, seq.toLong(), dim.toLong()))
-    }
-
-    /** Result → letzte-Position-Logits-Zeile (FloatArray, Vokabulargröße). */
-    private fun OrtSession.Result.toFloatRows(): FloatArray {
-        @Suppress("UNCHECKED_CAST")
-        val all = (this[0].value as Array<Array<FloatArray>>)
-        return all[0][all[0].size - 1]
-    }
-
-    private fun OnnxTensor.copy(): OnnxTensor {
-        // KV-Cache: [1, heads, seq, dim] (rank 4)
-        @Suppress("UNCHECKED_CAST")
-        val v = value as Array<Array<Array<FloatArray>>>
-        val heads = v[0].size
-        val seq = v[0][0].size
-        val dim = v[0][0][0].size
-        val flat = FloatArray(heads * seq * dim)
-        var p = 0
-        for (h in v[0]) for (s in h) for (x in s) flat[p++] = x
-        return OnnxTensor.createTensor(env, FloatBuffer.wrap(flat), longArrayOf(1, heads.toLong(), seq.toLong(), dim.toLong()))
-    }
-
-    private fun argmax(row: FloatArray): Int {
-        var best = 0
-        var bestVal = row[0]
-        for (i in 1 until row.size) if (row[i] > bestVal) { bestVal = row[i]; best = i }
-        return best
-    }
-
-    fun close() {
-        runCatching { encoder.close() }
-        runCatching { decoderStep1.close() }
-        runCatching { decoderWithPast.close() }
-    }
+    // ───────────────────────────── Download + Init ─────────────────────────────
 
     companion object {
-        private const val EOS_ID = 1
-        private const val PAD_ID = 0L
+        private const val TAG = "OnnxSummarizer"
+        private const val MODEL_REPO = "Xenova/t5-small"
+        private const val ENCODER_FILE = "encoder_model_quantized.onnx"
+        private const val DECODER_FILE = "decoder_model_quantized.onnx"
+        private const val DECODER_PAST_FILE = "decoder_with_past_model_quantized.onnx"
+        private const val TOKENIZER_FILE = "tokenizer.json"
         private const val MAX_SOURCE_TOKENS = 480
+        private val REQUIRED_FILES = listOf("onnx/$ENCODER_FILE" to ENCODER_FILE, "onnx/$DECODER_FILE" to DECODER_FILE, "onnx/$DECODER_PAST_FILE" to DECODER_PAST_FILE, TOKENIZER_FILE to TOKENIZER_FILE)
 
-        const val MODEL_REPO = "Xenova/t5-small"
-        const val ENCODER_FILE = "encoder_model_quantized.onnx"
-        const val DECODER_FILE = "decoder_model_quantized.onnx"
-        const val DECODER_PAST_FILE = "decoder_with_past_model_quantized.onnx"
-        const val TOKENIZER_FILE = "tokenizer.json"
+        fun dir(ctx: Context): File = File(ctx.filesDir, "onnx").apply { mkdirs() }
+        fun isDownloaded(ctx: Context): Boolean = REQUIRED_FILES.all { (_, d) -> File(dir(ctx), d).length() > 1_000_000 }
 
-        /** (Remote-Pfad im Repo, lokale Zieldatei) — Gesamtgröße ~118 MB. */
-        val REQUIRED_FILES = listOf(
-            "onnx/$ENCODER_FILE" to ENCODER_FILE,
-            "onnx/$DECODER_FILE" to DECODER_FILE,
-            "onnx/$DECODER_PAST_FILE" to DECODER_PAST_FILE,
-            TOKENIZER_FILE to TOKENIZER_FILE,
-        )
-
-        fun dir(context: Context): File = File(context.filesDir, "onnx").apply { mkdirs() }
-
-        fun isDownloaded(context: Context): Boolean =
-            REQUIRED_FILES.all { (_, dest) -> File(dir(context), dest).length() > 1_000_000 }
-
-        /** Lädt die Modell-Dateien (mit Redirect-Loop, Temp-Datei + Rename). true = vollständig. */
-        fun download(context: Context, onProgress: (String) -> Unit): Boolean {
-            val dir = dir(context)
+        fun download(ctx: Context, onProgress: (String) -> Unit): Boolean {
+            val dir = dir(ctx)
             for ((remote, dest) in REQUIRED_FILES) {
-                val out = File(dir, dest)
-                if (out.length() > 1_000_000) continue
-                onProgress(dest)
-                val tmp = File(dir, "$dest.part")
+                val out = File(dir, dest); if (out.length() > 1_000_000) continue
+                onProgress(dest); val tmp = File(dir, "$dest.part")
                 try {
-                    tmp.delete()
-                    val startUrl = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
-                    var currentUrl = startUrl
-                    var bytesWritten = 0L
-
-                    // Redirect-Loop (HuggingFace leitet auf CDN um, max 5 Hops)
+                    tmp.delete(); var url = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
                     for (hop in 1..5) {
-                        val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
-                        conn.connectTimeout = 30_000
-                        conn.readTimeout = 120_000
-                        conn.instanceFollowRedirects = false
-                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) NewsWave/1.0")
-                        conn.connect()
-
-                        val code = conn.responseCode
-                        if (code in 301..308) {
-                            val location = conn.getHeaderField("Location")
-                            conn.disconnect()
-                            if (location == null) throw IllegalStateException("Redirect ohne Location: $dest")
-                            currentUrl = if (location.startsWith("http")) location else java.net.URL(java.net.URL(startUrl), location).toString()
-                            continue
-                        }
-                        if (code != 200) {
-                            conn.disconnect()
-                            throw IllegalStateException("HTTP $code für $dest von $currentUrl")
-                        }
-
-                        // Datei schreiben
-                        conn.inputStream.use { input ->
-                            tmp.outputStream().use { output ->
-                                val buf = ByteArray(64 * 1024)
-                                var read: Int
-                                while (input.read(buf).also { read = it } != -1) {
-                                    output.write(buf, 0, read)
-                                    bytesWritten += read
-                                }
-                            }
-                        }
-                        conn.disconnect()
-                        break
+                        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                        c.connectTimeout = 30_000; c.readTimeout = 120_000; c.instanceFollowRedirects = false
+                        c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) NewsWave/1.0"); c.connect()
+                        val code = c.responseCode
+                        if (code in 301..308) { val loc = c.getHeaderField("Location"); c.disconnect(); url = if (loc?.startsWith("http") == true) loc else java.net.URL(java.net.URL("https://huggingface.co/$MODEL_REPO/"), loc ?: "").toString(); continue }
+                        if (code != 200) { c.disconnect(); throw IllegalStateException("HTTP $code") }
+                        c.inputStream.use { i -> tmp.outputStream().use { o -> val b = ByteArray(65536); var r: Int; while (i.read(b).also { r = it } != -1) o.write(b, 0, r) } }
+                        c.disconnect(); break
                     }
-
-                    if (!tmp.exists() || tmp.length() < 1_000_000) {
-                        throw IllegalStateException("Download unvollständig: $dest (${tmp.length()} bytes, erwartet >1MB)")
-                    }
-                    if (!tmp.renameTo(out)) {
-                        out.delete()
-                        if (!tmp.renameTo(out)) throw IllegalStateException("rename fehlgeschlagen: $dest")
-                    }
-                } catch (e: Exception) {
-                    tmp.delete()
-                    return false
-                }
+                    if (tmp.length() < 1_000_000) throw IllegalStateException("unvollständig")
+                    if (!tmp.renameTo(out)) { out.delete(); tmp.renameTo(out) }
+                } catch (e: Exception) { tmp.delete(); Log.e(TAG, "Download: $dest", e); return false }
             }
             return true
         }
 
-        @Volatile private var instance: OnnxSummarizer? = null
-
-        /** Singleton-Zugriff; null wenn Modell nicht (vollständig) geladen. */
-        fun get(context: Context): OnnxSummarizer? {
-            instance?.let { return it }
-            if (!isDownloaded(context)) return null
+        @Volatile private var inst: OnnxSummarizer? = null
+        fun get(ctx: Context): OnnxSummarizer? {
+            inst?.let { return it }; if (!isDownloaded(ctx)) return null
             return try {
-                val env = OrtEnvironment.getEnvironment()
-                val dir = dir(context)
+                val env = OrtEnvironment.getEnvironment(); val dir = dir(ctx)
                 val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(2) }
-                val created = OnnxSummarizer(
-                    env,
+                OnnxSummarizer(env,
                     env.createSession(File(dir, ENCODER_FILE).absolutePath, opts),
                     env.createSession(File(dir, DECODER_FILE).absolutePath, opts),
                     env.createSession(File(dir, DECODER_PAST_FILE).absolutePath, opts),
                     T5UnigramTokenizer(parseTokenizerJson(File(dir, TOKENIZER_FILE).readText())),
-                )
-                instance = created
-                created
-            } catch (_: Exception) {
-                null
-            }
+                ).also { inst = it }
+            } catch (e: Exception) { Log.e(TAG, "Init failed", e); null }
         }
 
-        /**
-         * Extraktiert model.vocab ([[piece, score], ...]) aus tokenizer.json.
-         * Bewusst ohne JSON-Library: nur dieser eine Teil des Dokuments interessiert,
-         * und Pieces können alle Escape-Formen (\u2581, \", \\ …) enthalten.
-         */
         private fun parseTokenizerJson(json: String): List<Pair<String, Float>> {
-            val result = ArrayList<Pair<String, Float>>(32_000)
-            val vocabStart = json.indexOf("\"vocab\"")
-            if (vocabStart < 0) throw IllegalStateException("tokenizer.json: vocab fehlt")
-            var pos = json.indexOf('[', vocabStart) + 1
-            while (pos < json.length) {
-                // Whitespace/Kommas überspringen
-                while (pos < json.length && (json[pos] == ',' || json[pos].isWhitespace())) pos++
-                if (pos >= json.length || json[pos] == ']') break
-                if (json[pos] != '[') { pos++; continue }
-                // Piece-String lesen (escape-aware)
-                val openQuote = json.indexOf('"', pos)
-                if (openQuote < 0) break
-                val sb = StringBuilder()
-                var p = openQuote + 1
-                while (p < json.length) {
-                    val c = json[p]
-                    if (c == '\\' && p + 1 < json.length) { sb.append(c).append(json[p + 1]); p += 2; continue }
-                    if (c == '"') break
-                    sb.append(c); p++
-                }
-                val piece = unescapeJson(sb.toString())
-                // score bis ']'
-                val comma = json.indexOf(',', p)
-                val closeBracket = json.indexOf(']', p)
-                if (comma < 0 || closeBracket < 0 || comma > closeBracket) { pos = p + 1; continue }
-                val score = json.substring(comma + 1, closeBracket).trim().toFloatOrNull() ?: 0f
-                result.add(piece to score)
-                pos = closeBracket + 1
+            val r = ArrayList<Pair<String, Float>>(32_000); val vs = json.indexOf("\"vocab\"")
+            if (vs < 0) throw IllegalStateException("vocab fehlt"); var p = json.indexOf('[', vs) + 1
+            while (p < json.length) {
+                while (p < json.length && (json[p] == ',' || json[p].isWhitespace())) p++
+                if (p >= json.length || json[p] == ']') break; if (json[p] != '[') { p++; continue }
+                val oq = json.indexOf('"', p); if (oq < 0) break; val sb = StringBuilder(); var q = oq + 1
+                while (q < json.length) { val c = json[q]; if (c == '\\' && q+1<json.length) { sb.append(c).append(json[q+1]); q+=2; continue }; if (c=='"') break; sb.append(c); q++ }
+                val piece = unesc(sb.toString()); val cm = json.indexOf(',', q); val cb = json.indexOf(']', q)
+                if (cm < 0 || cb < 0 || cm > cb) { p = q+1; continue }
+                val score = json.substring(cm+1, cb).trim().toFloatOrNull() ?: 0f; r.add(piece to score); p = cb+1
             }
-            if (result.size < 10_000) throw IllegalStateException("tokenizer.json: nur ${result.size} Pieces geparst")
-            return result
+            if (r.size < 10_000) throw IllegalStateException("nur ${r.size} Pieces"); return r
         }
-
-        private fun unescapeJson(s: String): String {
-            val sb = StringBuilder(s.length)
-            var i = 0
-            while (i < s.length) {
-                val c = s[i]
-                if (c == '\\' && i + 1 < s.length) {
-                    when (val n = s[i + 1]) {
-                        'u' -> { sb.append(s.substring(i + 2, i + 6).toInt(16).toChar()); i += 6; continue }
-                        'n' -> sb.append('\n')
-                        'r' -> sb.append('\r')
-                        't' -> sb.append('\t')
-                        else -> sb.append(n)
-                    }
-                    i += 2
-                } else { sb.append(c); i++ }
-            }
-            return sb.toString()
-        }
+        private fun unesc(s: String): String { val sb = StringBuilder(); var i=0; while (i<s.length) { val c=s[i]; if (c=='\\'&&i+1<s.length) { when(val n=s[i+1]) { 'u'->{sb.append(s.substring(i+2,i+6).toInt(16).toChar()); i+=6;continue}; 'n'->sb.append('\n'); 'r'->sb.append('\r'); 't'->sb.append('\t'); else->sb.append(n) }; i+=2 } else { sb.append(c); i++ } }; return sb.toString() }
     }
 }
