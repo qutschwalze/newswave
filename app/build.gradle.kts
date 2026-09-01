@@ -13,8 +13,8 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.14.0"
+        versionCode = 23
+        versionName = "0.14.1"
         // ONNX Runtime: nur arm64-v8a bündeln → spart ~60 MB APK
         ndk {
             abiFilters += listOf("arm64-v8a")

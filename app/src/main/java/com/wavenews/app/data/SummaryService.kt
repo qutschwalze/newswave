@@ -29,23 +29,30 @@ class SummaryService(
     suspend fun getSummary(
         articleId: String,
         url: String,
+        teaserHtml: String? = null,
         onnxEnabled: Boolean = false,
     ): SummaryResult = withContext(Dispatchers.IO) {
         db.summaryDao().byArticle(articleId)?.let {
             return@withContext SummaryResult.Success(it.summary, fromCache = true)
         }
 
+        // 1) Volltext aus der Artikel-URL (scheitert bei Consent-/Botwall-Seiten wie Golem)
         val fullText = url.takeIf { it.startsWith("http") }?.let { ArticleTextExtractor.extract(it) }
-            ?: return@withContext SummaryResult.Unavailable
+
+        // 2) Fallback: Feed-Teaser (summaryHtml) — deutlich besser als der Cookie-Banner
+        val sourceText = fullText
+            ?: teaserHtml?.let { org.jsoup.Jsoup.parse(it).text().trim().takeIf { t -> t.length >= 150 } }
+
+        val usableText = sourceText ?: return@withContext SummaryResult.Unavailable
 
         // Bevorzugter Weg: ONNX (abstraktiv, von Null lernt) — wenn aktiviert und Modell geladen
         val onnxResult: String? = if (onnxEnabled && appContext != null) {
-            OnnxSummarizer.get(appContext)?.summarize(fullText)
+            OnnxSummarizer.get(appContext)?.summarize(usableText)
         } else null
 
         // Fallback: extraktiver Summarizer (kein Modell nötig)
         val summary: String = onnxResult
-            ?: Summarizer.summarize(fullText)
+            ?: Summarizer.summarize(usableText)
             ?: return@withContext SummaryResult.Unavailable
 
         db.summaryDao().upsert(SummaryEntity(articleId = articleId, summary = summary))

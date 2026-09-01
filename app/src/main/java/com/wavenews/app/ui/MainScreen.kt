@@ -343,6 +343,7 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
             val result = try {
                 app.summaryService.getSummary(
                     article.id, article.url,
+                    teaserHtml = article.summaryHtml,
                     onnxEnabled = app.settings.settingsOnce().onnxEnabled && OnnxSummarizer.isDownloaded(app),
                 )
             } catch (_: Exception) {
