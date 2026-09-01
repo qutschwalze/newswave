@@ -61,6 +61,8 @@ class OnnxSummarizer private constructor(
             } finally { ids.close(); msk.close() }
         }
 
+        Log.d(TAG, "Source: ${src.size} tokens, hidden: ${hiddenShape.joinToString("x")}")
+
         // 3) Decoder Schritt 1 (no-past) → 24 KV-Caches (FloatArrays)
         val kvList: MutableList<KVCopy>
         var last: Int
@@ -73,6 +75,7 @@ class OnnxSummarizer private constructor(
                 @Suppress("UNCHECKED_CAST")
                 val logits = (res[0].value as Array<Array<FloatArray>>)[0][0]
                 last = logits.indices.maxByOrNull { logits[it] }?.toInt() ?: 1
+                Log.d(TAG, "Step1: first_token=$last, logits[-5..-1]=${logits.takeLast(5).map { "%.3f".format(it) }}")
 
                 val names = decoderNoPast.outputNames.toList()
                 kvList = ArrayList(names.size - 1)
@@ -87,6 +90,9 @@ class OnnxSummarizer private constructor(
                 res.close()
             } finally { inpIds.close(); encH.close(); encM.close() }
         }
+
+        Log.d(TAG, "kvList has ${kvList.size} entries, first_token=$last")
+        Log.d(TAG, "kvList entries: ${kvList.map { it.name }}")
 
         // 4) Decode-Loop
         val gen = ArrayList<Int>(maxNewTokens)
@@ -112,6 +118,7 @@ class OnnxSummarizer private constructor(
                 @Suppress("UNCHECKED_CAST")
                 val logits = (step[0].value as Array<Array<FloatArray>>)[0][0]
                 last = logits.indices.maxByOrNull { logits[it] }?.toInt() ?: 1
+                Log.d(TAG, "Step ${gen.size}: token=$last (unk=2), logits[-5..-1]=${logits.takeLast(5).map { "%.3f".format(it) }}")
 
                 // Nur Decoder-KVs updaten
                 val sNames = decoderWithPast.outputNames.toList()
@@ -133,6 +140,7 @@ class OnnxSummarizer private constructor(
         }
 
         if (gen.isEmpty()) return null
+        Log.d(TAG, "Generated ${gen.size} tokens: ${gen.take(10)}…")
         return tokenizer.decode(gen.toIntArray()).takeIf { it.isNotBlank() }
     }
 
