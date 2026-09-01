@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,9 +75,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -193,12 +196,23 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         }
     }
 
+    /** Scroll-Position der Hauptliste (wird bei Navigation gespeichert). */
+    private val _listScrollIndex = mutableIntStateOf(0)
+    private val _listScrollOffset = mutableIntStateOf(0)
+    val listScrollIndex: Int get() = _listScrollIndex.intValue
+    val listScrollOffset: Int get() = _listScrollOffset.intValue
+
     fun openArticle(article: ArticleEntity) {
         ui.value = ui.value.copy(openArticle = article)
     }
 
     fun closeArticle() {
         ui.value = ui.value.copy(openArticle = null)
+    }
+
+    fun saveListScroll(index: Int, offset: Int) {
+        _listScrollIndex.intValue = index
+        _listScrollOffset.intValue = offset
     }
 
     fun login(server: String, user: String, password: String) {
@@ -291,7 +305,11 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         if (_onnxState.value.downloading) return
         viewModelScope.launch {
             _onnxState.value = OnnxDownloadState(downloading = true, progress = "Starte…")
-            val ok = OnnxSummarizer.download(app) { file -> _onnxState.value = _onnxState.value.copy(progress = file) }
+            val ok = withContext(Dispatchers.IO) {
+                OnnxSummarizer.download(app) { file ->
+                    _onnxState.value = _onnxState.value.copy(progress = file)
+                }
+            }
             _onnxState.value = if (ok) {
                 OnnxDownloadState(downloaded = true, message = "✅ Modell geladen")
             } else {
@@ -1241,8 +1259,18 @@ private fun DiscoverFeedsSheet(subscribedUrls: List<String>, state: UiState, vm:
 @Composable
 private fun ArticleList(articles: List<ArticleEntity>, vm: MainViewModel, settings: AppSettings) {
     val context = LocalContext.current
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = vm.listScrollIndex,
+        initialFirstVisibleItemScrollOffset = vm.listScrollOffset,
+    )
+    // Scroll-Position bei Änderung speichern
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) -> vm.saveListScroll(index, offset) }
+    }
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -1543,11 +1571,9 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
         val maxDragPx = with(density) { 320.dp.toPx() }
         val canSwipe = settings.swipeActions && article.url.isNotBlank()
 
-        // "Artikel klebt am Finger": Der Inhalt verschiebt sich mit dem Finger und
-        // öffnet oben (interner Viewer) bzw. unten (externer Browser) eine Lücke.
-        // Der Pull funktioniert an JEDER Stelle des Screens: Er ist die Rest-Bewegung
-        // der LazyColumn an ihrem Anschlag (wie Pull-to-Refresh) — deshalb muss der
-        // Artikelinhalt IN der LazyColumn liegen und die Liste kennt ihre Grenzen.
+        // "Artikel klebt am Finger": Die Geste nutzt pointerInput statt nestedScroll,
+        // um Konflikte mit der LazyColumn zu vermeiden. Der Finger-Zug wird direkt
+        // gemessen, unabhängig davon, ob die Liste noch scrollen kann.
         var pullPx by remember(article.id) { mutableFloatStateOf(0f) }
         var pullDirection by remember(article.id) { mutableStateOf(SwipeDirection.NONE) }
         var contentHeightPx by remember(article.id) { mutableFloatStateOf(0f) }
@@ -1561,91 +1587,16 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
             scope.launch {
                 val anim = androidx.compose.animation.core.Animatable(pullPx)
                 anim.animateTo(0f, androidx.compose.animation.core.tween(220)) {
-                    pullPx = value // Receiver-Property des Animatable
+                    pullPx = value
                 }
                 pullDirection = SwipeDirection.NONE
             }
         }
 
         val listState = rememberLazyListState()
-        val nestedScrollConnection = remember(article.id, canSwipe) {
-            object : NestedScrollConnection {
-                override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                    // Nur den DOWN-Pull beim Zurückziehen begleiten (Liste ist oben,
-                    // kann negative Bewegung nicht selbst konsumieren). Der UP-Pull
-                    // wird bewusst HIER NICHT behandelt — sonst frisst pre-scroll
-                    // die eigene Zug-Bewegung und die Schwelle ist unerreichbar.
-                    if (pullPx > 0f && pullDirection == SwipeDirection.DOWN && available.y < 0f) {
-                        val consumed = available.y.coerceAtLeast(-pullPx)
-                        pullPx += consumed
-                        if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
-                        return Offset(0f, consumed)
-                    }
-                    return Offset.Zero
-                }
-
-                override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                    if (!canSwipe) return Offset.Zero
-                    val rest = available.y
-                    if (rest > 0f) {
-                        // UP-Pull zurücknehmen, sobald der Finger wieder nach unten zieht
-                        // und die Liste am oberen Anschlag nichts mehr konsumieren kann
-                        if (pullDirection == SwipeDirection.UP && pullPx > 0f) {
-                            val reduce = rest.coerceAtMost(pullPx)
-                            pullPx -= reduce
-                            if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
-                            return Offset(0f, reduce)
-                        }
-                        // Ziehen über den oberen Anschlag hinaus → Lücke oben (interner Viewer)
-                        if (pullDirection == SwipeDirection.NONE || pullDirection == SwipeDirection.DOWN) {
-                            pullDirection = SwipeDirection.DOWN
-                            pullPx = (pullPx + rest).coerceIn(0f, maxDragPx)
-                            return Offset(0f, rest)
-                        }
-                        return Offset.Zero
-                    }
-                    if (rest < 0f) {
-                        // DOWN-Pull zurücknehmen, wenn der Finger wieder nach oben zieht
-                        // und die Liste am unteren Anschlag nichts mehr konsumieren kann
-                        if (pullDirection == SwipeDirection.DOWN && pullPx > 0f) {
-                            val reduce = (-rest).coerceAtMost(pullPx)
-                            pullPx -= reduce
-                            if (pullPx <= 0f) pullDirection = SwipeDirection.NONE
-                            return Offset(0f, -reduce)
-                        }
-                        // Ziehen über den unteren Anschlag hinaus → Lücke unten (externer Browser)
-                        if (pullDirection == SwipeDirection.NONE || pullDirection == SwipeDirection.UP) {
-                            pullDirection = SwipeDirection.UP
-                            pullPx = (pullPx - rest).coerceIn(0f, maxDragPx)
-                            return Offset(0f, rest)
-                        }
-                        return Offset.Zero
-                    }
-                    return Offset.Zero
-                }
-
-                override suspend fun onPreFling(available: Velocity): Velocity {
-                    if (pullPx >= thresholdPx) {
-                        val dir = pullDirection
-                        resetPullImmediately()
-                        when (dir) {
-                            SwipeDirection.DOWN -> openInternalViewer(article)
-                            SwipeDirection.UP -> openExternal(article.url)
-                            SwipeDirection.NONE -> Unit
-                        }
-                    } else if (pullPx > 0f) {
-                        animatePullReset()
-                    }
-                    // Fling nicht konsumieren — die Liste darf weitergleiten
-                    return Velocity.Zero
-                }
-            }
-        }
 
         Crossfade(targetState = internalBrowserUrl, label = "detail-crossfade") { browserUrl ->
             if (browserUrl != null) {
-                // WICHTIG: gleiches Scaffold-Padding wie die Artikel-Ansicht — sonst
-                // liegt die Browser-Leiste hinter der Top-Bar und unten in der Nav-Leiste.
                 Box(Modifier.padding(padding).fillMaxSize()) {
                     InternalBrowserScreen(
                         url = browserUrl,
@@ -1680,17 +1631,51 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
                         )
                     }
 
-                    // Der Inhalt klebt am Finger
+                    // Der Inhalt klebt am Finger — pointerInput für saubere Geste
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .graphicsLayer { translationY = pullPx },
+                            .graphicsLayer { translationY = pullPx }
+                            .pointerInput(article.id, canSwipe) {
+                                if (!canSwipe) return@pointerInput
+                                var startY = 0f
+                                var pulling = false
+                                detectVerticalDragGestures(
+                                    onDragStart = { offset -> startY = offset.y; pulling = false },
+                                    onDragEnd = { if (pulling) animatePullReset() },
+                                    onDragCancel = { if (pulling) animatePullReset() },
+                                    onVerticalDrag = { _, dragAmount ->
+                                        // Nur reagieren, wenn die Liste am Anschlag ist
+                                        val atTop = listState.firstVisibleItemIndex == 0 &&
+                                            listState.firstVisibleItemScrollOffset == 0
+                                        val atBottom = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.let {
+                                            it.index == listState.layoutInfo.totalItemsCount - 1 &&
+                                            it.offset + it.size <= listState.layoutInfo.viewportEndOffset
+                                        } ?: false
+
+                                        if (dragAmount > 0f && atTop) {
+                                            // Nach unten ziehen → Lücke oben (interner Viewer)
+                                            pullDirection = SwipeDirection.DOWN
+                                            pullPx = (pullPx + dragAmount).coerceIn(0f, maxDragPx)
+                                            pulling = true
+                                        } else if (dragAmount < 0f && atBottom) {
+                                            // Nach oben ziehen → Lücke unten (externer Browser)
+                                            pullDirection = SwipeDirection.UP
+                                            pullPx = (pullPx - dragAmount).coerceIn(0f, maxDragPx)
+                                            pulling = true
+                                        } else if (pulling) {
+                                            // Finger hat Richtung gewechselt oder Liste kann scrollen
+                                            animatePullReset()
+                                        }
+                                    },
+                                )
+                            }
+                            .onSizeChanged { contentHeightPx = it.height.toFloat() },
                     ) {
                         LazyColumn(
                             state = listState,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .nestedScroll(nestedScrollConnection)
                                 .onSizeChanged { contentHeightPx = it.height.toFloat() },
                         ) {
                             item {
