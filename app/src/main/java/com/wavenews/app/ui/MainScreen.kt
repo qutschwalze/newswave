@@ -116,6 +116,8 @@ import com.wavenews.app.data.SummaryService
 import com.wavenews.app.data.ThemeMode
 import com.wavenews.app.data.db.ArticleEntity
 import com.wavenews.app.data.db.FeedEntity
+import com.wavenews.app.data.db.SummaryEntity
+import com.wavenews.app.data.summarizer.OnnxSummarizer
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -269,6 +271,41 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
 
     // --- KI-Zusammenfassung (Phase 5) ---
 
+    /** ONNX-Download-Status für die Settings-UI. */
+    data class OnnxDownloadState(
+        val downloading: Boolean = false,
+        val downloaded: Boolean = false,
+        val message: String = "",
+        val progress: String = "",
+    )
+    private val _onnxState = MutableStateFlow(OnnxDownloadState(downloaded = OnnxSummarizer.isDownloaded(app)))
+    val onnxState: StateFlow<OnnxDownloadState> = _onnxState
+
+    fun toggleOnnx(value: Boolean) {
+        viewModelScope.launch { app.settings.setOnnxEnabled(value) }
+        if (value && !OnnxSummarizer.isDownloaded(app)) downloadOnnx()
+        if (!value) app.summaryService.deleteOnnxModel()
+    }
+
+    fun downloadOnnx() {
+        if (_onnxState.value.downloading) return
+        viewModelScope.launch {
+            _onnxState.value = OnnxDownloadState(downloading = true, progress = "Starte…")
+            val ok = OnnxSummarizer.download(app) { file -> _onnxState.value = _onnxState.value.copy(progress = file) }
+            _onnxState.value = if (ok) {
+                OnnxDownloadState(downloaded = true, message = "✅ Modell geladen")
+            } else {
+                OnnxDownloadState(message = "❌ Download fehlgeschlagen")
+            }
+        }
+    }
+
+    fun deleteOnnx() {
+        app.summaryService.deleteOnnxModel()
+        _onnxState.value = OnnxDownloadState(downloaded = false, message = "Gelöscht")
+        viewModelScope.launch { app.settings.setOnnxEnabled(false) }
+    }
+
     private val _summary = MutableStateFlow<SummaryUiState?>(null)
 
     /** Aktueller Summary-Zustand für den geöffneten internen Viewer (null = kein Viewer offen). */
@@ -282,7 +319,10 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         _summary.value = SummaryUiState(loading = true, articleId = article.id)
         viewModelScope.launch {
             val result = try {
-                app.summaryService.getSummary(article.id, article.url)
+                app.summaryService.getSummary(
+                    article.id, article.url,
+                    onnxEnabled = app.settings.settingsOnce().onnxEnabled && OnnxSummarizer.isDownloaded(app),
+                )
             } catch (_: Exception) {
                 SummaryService.SummaryResult.Unavailable
             }
@@ -850,6 +890,26 @@ private fun SettingsSheet(
                 Switch(checked = settings.swipeActions, onCheckedChange = { vm.setSwipeActions(it) })
             }
             Spacer(Modifier.height(16.dp))
+
+            // --- KI-Zusammenfassung (ONNX T5-small, optional) ---
+            val onnxState by vm.onnxState.collectAsState()
+            Text(stringResource(R.string.onnx_header), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.onnx_toggle), modifier = Modifier.weight(1f))
+                Switch(checked = settings.onnxEnabled, onCheckedChange = { vm.toggleOnnx(it) })
+            }
+            if (onnxState.downloading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                Text(onnxState.progress, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (onnxState.downloaded) {
+                Text(stringResource(R.string.onnx_ready), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                TextButton(onClick = { vm.deleteOnnx() }) { Text(stringResource(R.string.onnx_delete)) }
+            } else if (onnxState.message.isNotBlank()) {
+                Text(onnxState.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            Text(stringResource(R.string.onnx_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
 
             // --- Feeds verwalten (aus dem Drawer hierher umgezogen) ---
             Row(
@@ -1584,15 +1644,19 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
 
         Crossfade(targetState = internalBrowserUrl, label = "detail-crossfade") { browserUrl ->
             if (browserUrl != null) {
-                InternalBrowserScreen(
-                    url = browserUrl,
-                    summaryState = summaryState?.takeIf { it.articleId == article.id },
-                    onDismissSummary = { vm.dismissSummary() },
-                    onClose = {
-                        internalBrowserUrl = null
-                        vm.dismissSummary()
-                    },
-                )
+                // WICHTIG: gleiches Scaffold-Padding wie die Artikel-Ansicht — sonst
+                // liegt die Browser-Leiste hinter der Top-Bar und unten in der Nav-Leiste.
+                Box(Modifier.padding(padding).fillMaxSize()) {
+                    InternalBrowserScreen(
+                        url = browserUrl,
+                        summaryState = summaryState?.takeIf { it.articleId == article.id },
+                        onDismissSummary = { vm.dismissSummary() },
+                        onClose = {
+                            internalBrowserUrl = null
+                            vm.dismissSummary()
+                        },
+                    )
+                }
             } else {
                 Box(
                     Modifier

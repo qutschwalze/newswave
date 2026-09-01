@@ -27,7 +27,7 @@ class WaveNewsApp : Application(), ImageLoaderFactory {
         super.onCreate()
         settings = SettingsStore(this)
         repository = NewsRepository(settings, AppDatabase.get(this))
-        summaryService = SummaryService(AppDatabase.get(this))
+        summaryService = SummaryService(AppDatabase.get(this), this)
         SyncWorker.schedule(this)
     }
 

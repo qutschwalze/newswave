@@ -54,6 +54,11 @@
     <string name="opml_url_label">OPML-URL (https://…)</string>
     <string name="opml_load">Laden</string>
     <string name="opml_failed">OPML-Import fehlgeschlagen</string>
+    <string name="onnx_header">KI-Zusammenfassung (ONNX)</string>
+    <string name="onnx_toggle">Abstraktive KI-Zusammenfassung (T5-small, ~118 MB Download)</string>
+    <string name="onnx_ready">Modell geladen ✅</string>
+    <string name="onnx_delete">Modell löschen</string>
+    <string name="onnx_hint">Nutzt ein kleines Sprachmodell direkt auf dem Gerät. Zusammenfassungen sind natürlicher als die Standard-Variante. Kein Cloud-Zugriff.</string>
 
     <string name="settings_title">Einstellungen</string>
     <string name="settings_cards">Kartengröße</string>

@@ -13,8 +13,8 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.9.0"
+        versionCode = 16
+        versionName = "0.10.0"
     }
 
     buildTypes {
@@ -73,4 +73,8 @@ dependencies {
 
     // Einstellungen (Server-URL, User, Token)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // ONNX Runtime (optional, für abstraktive KI-Zusammenfassung mit T5-small)
+    // Nur arm64-v8a: spart ~60 MB APK-Größe (alle ABI-Splits wären ~15 MB mehr).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 }

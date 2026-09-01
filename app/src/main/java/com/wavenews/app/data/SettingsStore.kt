@@ -29,6 +29,7 @@ data class AppSettings(
     val topicImages: Boolean = true,
     val swipeActions: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val onnxEnabled: Boolean = false,
 )
 
 class SettingsStore(private val context: Context) {
@@ -41,6 +42,7 @@ class SettingsStore(private val context: Context) {
     private val keyTopic = booleanPreferencesKey("topic_images")
     private val keySwipe = booleanPreferencesKey("swipe_actions")
     private val keyTheme = stringPreferencesKey("theme_mode")
+    private val keyOnnx = booleanPreferencesKey("onnx_enabled")
 
     val account: Flow<Account?> = context.dataStore.data.map { p ->
         val server = p[keyServer]
@@ -56,6 +58,7 @@ class SettingsStore(private val context: Context) {
             topicImages = p[keyTopic] ?: true,
             swipeActions = p[keySwipe] ?: true,
             themeMode = p[keyTheme]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
+            onnxEnabled = p[keyOnnx] ?: false,
         )
     }
 
@@ -76,6 +79,7 @@ class SettingsStore(private val context: Context) {
     suspend fun setTopicImages(value: Boolean) = context.dataStore.edit { it[keyTopic] = value }
     suspend fun setSwipeActions(value: Boolean) = context.dataStore.edit { it[keySwipe] = value }
     suspend fun setThemeMode(value: ThemeMode) = context.dataStore.edit { it[keyTheme] = value.name }
+    suspend fun setOnnxEnabled(value: Boolean) = context.dataStore.edit { it[keyOnnx] = value }
 
     suspend fun clear() {
         context.dataStore.edit { it.clear() }
