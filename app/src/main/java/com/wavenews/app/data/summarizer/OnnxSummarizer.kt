@@ -199,32 +199,49 @@ class OnnxSummarizer private constructor(
                 val tmp = File(dir, "$dest.part")
                 try {
                     tmp.delete()
-                    var currentUrl = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
-                    // Redirect-Loop (HuggingFace leitet auf CDN um)
-                    for (attempt in 1..5) {
+                    val startUrl = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
+                    var currentUrl = startUrl
+                    var bytesWritten = 0L
+
+                    // Redirect-Loop (HuggingFace leitet auf CDN um, max 5 Hops)
+                    for (hop in 1..5) {
                         val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
-                        conn.connectTimeout = 20_000
+                        conn.connectTimeout = 30_000
                         conn.readTimeout = 120_000
-                        conn.instanceFollowRedirects = false // Manuell verfolgen
+                        conn.instanceFollowRedirects = false
                         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) NewsWave/1.0")
+                        conn.connect()
+
                         val code = conn.responseCode
                         if (code in 301..308) {
-                            currentUrl = conn.getHeaderField("Location") ?: break
+                            val location = conn.getHeaderField("Location")
                             conn.disconnect()
+                            if (location == null) throw IllegalStateException("Redirect ohne Location: $dest")
+                            currentUrl = if (location.startsWith("http")) location else java.net.URL(java.net.URL(startUrl), location).toString()
                             continue
                         }
                         if (code != 200) {
                             conn.disconnect()
-                            throw IllegalStateException("HTTP $code für $dest")
+                            throw IllegalStateException("HTTP $code für $dest von $currentUrl")
                         }
+
+                        // Datei schreiben
                         conn.inputStream.use { input ->
-                            tmp.outputStream().use { output -> input.copyTo(output) }
+                            tmp.outputStream().use { output ->
+                                val buf = ByteArray(64 * 1024)
+                                var read: Int
+                                while (input.read(buf).also { read = it } != -1) {
+                                    output.write(buf, 0, read)
+                                    bytesWritten += read
+                                }
+                            }
                         }
                         conn.disconnect()
                         break
                     }
+
                     if (!tmp.exists() || tmp.length() < 1_000_000) {
-                        throw IllegalStateException("Download zu klein oder fehlend: $dest (${tmp.length()} bytes)")
+                        throw IllegalStateException("Download unvollständig: $dest (${tmp.length()} bytes, erwartet >1MB)")
                     }
                     if (!tmp.renameTo(out)) {
                         out.delete()

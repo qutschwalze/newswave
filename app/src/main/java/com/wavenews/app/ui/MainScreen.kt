@@ -305,15 +305,20 @@ class MainViewModel(private val app: WaveNewsApp) : ViewModel() {
         viewModelScope.launch {
             _onnxState.value = OnnxDownloadState(downloading = true, progress = "Starte…")
             val ok = withContext(Dispatchers.IO) {
-                OnnxSummarizer.download(app) { file ->
-                    _onnxState.value = _onnxState.value.copy(progress = file)
+                try {
+                    OnnxSummarizer.download(app) { file ->
+                        _onnxState.value = _onnxState.value.copy(progress = file)
+                    }
+                } catch (e: Exception) {
+                    _onnxState.value = _onnxState.value.copy(message = "❌ ${e.message}")
+                    false
                 }
             }
             _onnxState.value = if (ok) {
                 OnnxDownloadState(downloaded = true, message = "✅ Modell geladen")
-            } else {
-                OnnxDownloadState(message = "❌ Download fehlgeschlagen")
-            }
+            } else if (_onnxState.value.message.isBlank()) {
+                OnnxDownloadState(message = "❌ Download fehlgeschlagen — Internetverbindung prüfen")
+            } else _onnxState.value
         }
     }
 
@@ -1566,8 +1571,8 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
     ) { padding ->
         val density = LocalDensity.current
         val scope = rememberCoroutineScope()
-        val thresholdPx = with(density) { 130.dp.toPx() }
-        val maxDragPx = with(density) { 320.dp.toPx() }
+        val thresholdPx = with(density) { 100.dp.toPx() }
+        val maxDragPx = with(density) { 300.dp.toPx() }
         val canSwipe = settings.swipeActions && article.url.isNotBlank()
 
         // "Artikel klebt am Finger": nestedScroll fängt die Rest-Bewegung am Listen-Anschlag
@@ -1585,7 +1590,13 @@ private fun ArticleDetailScreen(article: ArticleEntity, vm: MainViewModel) {
         fun animatePullReset() {
             scope.launch {
                 val anim = androidx.compose.animation.core.Animatable(pullPx)
-                anim.animateTo(0f, androidx.compose.animation.core.tween(220)) {
+                anim.animateTo(
+                    0f,
+                    animationSpec = androidx.compose.animation.core.spring(
+                        dampingRatio = 0.7f,
+                        stiffness = 300f,
+                    ),
+                ) {
                     pullPx = value
                 }
                 pullDirection = SwipeDirection.NONE
