@@ -189,30 +189,48 @@ class OnnxSummarizer private constructor(
         fun isDownloaded(context: Context): Boolean =
             REQUIRED_FILES.all { (_, dest) -> File(dir(context), dest).length() > 1_000_000 }
 
-        /** Lädt die Modell-Dateien (mit Redirect-Follow, Temp-Datei + Rename). true = vollständig. */
+        /** Lädt die Modell-Dateien (mit Redirect-Loop, Temp-Datei + Rename). true = vollständig. */
         fun download(context: Context, onProgress: (String) -> Unit): Boolean {
             val dir = dir(context)
             for ((remote, dest) in REQUIRED_FILES) {
                 val out = File(dir, dest)
                 if (out.length() > 1_000_000) continue
                 onProgress(dest)
-                val url = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
                 val tmp = File(dir, "$dest.part")
                 try {
-                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-                    conn.connectTimeout = 20_000
-                    conn.readTimeout = 120_000
-                    conn.instanceFollowRedirects = true
-                    conn.setRequestProperty("User-Agent", "NewsWave/1.0")
-                    conn.inputStream.use { input ->
-                        tmp.outputStream().use { output -> input.copyTo(output) }
+                    tmp.delete()
+                    var currentUrl = "https://huggingface.co/$MODEL_REPO/resolve/main/$remote"
+                    // Redirect-Loop (HuggingFace leitet auf CDN um)
+                    for (attempt in 1..5) {
+                        val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 20_000
+                        conn.readTimeout = 120_000
+                        conn.instanceFollowRedirects = false // Manuell verfolgen
+                        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) NewsWave/1.0")
+                        val code = conn.responseCode
+                        if (code in 301..308) {
+                            currentUrl = conn.getHeaderField("Location") ?: break
+                            conn.disconnect()
+                            continue
+                        }
+                        if (code != 200) {
+                            conn.disconnect()
+                            throw IllegalStateException("HTTP $code für $dest")
+                        }
+                        conn.inputStream.use { input ->
+                            tmp.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        conn.disconnect()
+                        break
                     }
-                    if (tmp.length() < 1_000_000) throw IllegalStateException("Download zu klein: $dest")
+                    if (!tmp.exists() || tmp.length() < 1_000_000) {
+                        throw IllegalStateException("Download zu klein oder fehlend: $dest (${tmp.length()} bytes)")
+                    }
                     if (!tmp.renameTo(out)) {
                         out.delete()
                         if (!tmp.renameTo(out)) throw IllegalStateException("rename fehlgeschlagen: $dest")
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     tmp.delete()
                     return false
                 }
