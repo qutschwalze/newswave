@@ -34,7 +34,8 @@
         <!-- Home-Screen-Widget: 3 ungelesene Artikel -->
         <receiver
             android:name=".widget.NewsWaveWidgetProvider"
-            android:exported="false">
+            android:exported="false"
+            android:label="@string/widget_header">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -42,6 +43,12 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/newswave_widget_info" />
         </receiver>
+
+        <!-- Liefert die Widget-Artikel-Liste (Collection-Widget) -->
+        <service
+            android:name=".widget.NewsWidgetService"
+            android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
     </application>
 
 </manifest>

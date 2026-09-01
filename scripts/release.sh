@@ -14,8 +14,10 @@ cd "$(dirname "$0")/.."
 
 # 1) Bauen
 ./gradlew assembleDebug
-APK="app/build/outputs/apk/debug/app-debug.apk"
-[ -f "$APK" ] || { echo "APK nicht gefunden: $APK"; exit 1; }
+APK="app/build/outputs/apk/debug/app-arm64-v8a-debug.apk"  # ABI-Split (s. build.gradle.kts)
+[ -f "$APK" ] || APK="app/build/outputs/apk/debug/app-debug.apk"
+[ -f "$APK" ] || { echo "APK nicht gefunden (arm64-v8a Split oder app-debug.apk)"; exit 1; }
+echo "APK: $APK"
 
 # 2) Tag + Push
 git tag -a "v$VERSION" -m "News Wave v$VERSION" 2>/dev/null || echo "Tag v$VERSION existiert bereits"

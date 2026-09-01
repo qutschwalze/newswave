@@ -13,8 +13,12 @@ android {
         applicationId = "com.wavenews.app"
         minSdk = 33
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.13.0"
+        versionCode = 22
+        versionName = "0.14.0"
+        // ONNX Runtime: nur arm64-v8a bündeln → spart ~60 MB APK
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -33,6 +37,17 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // ONNX Runtime: nur arm64-v8a (Xiaomi/Marek-Einheiten) → spart ~60 MB APK
+    // und verhindert, dass 3 ABIs (armeabi+x86) gebündelt werden.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = true
+        }
     }
 }
 

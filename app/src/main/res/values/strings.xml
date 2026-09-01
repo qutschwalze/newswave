@@ -19,6 +19,9 @@
     <string name="detail_fulltext">Volltext</string>
     <string name="widget_header">News Wave</string>
     <string name="widget_empty">Keine ungelesenen Artikel</string>
+    <string name="widget_description">News Wave — die neuesten Artikel, direkt auf dem Homescreen</string>
+    <string name="widget_refresh">Aktualisieren</string>
+    <string name="widget_mark_all">Alle als gelesen markieren</string>
     <string name="notif_channel_name">Neue Artikel</string>
     <string name="notif_new_articles">%1$d neue Artikel</string>
     <string name="notif_new_articles_text">Tippen, um News Wave zu öffnen</string>

@@ -40,6 +40,22 @@ data class ArticleEntity(
     val starred: Boolean,
 )
 
+/** Widget-Zeile: Artikel + Kategorie des Feeds (COALESCE-Fallback auf Feed-Titel). */
+data class WidgetArticleRow(
+    val id: String,
+    val feedId: String,
+    val feedTitle: String,
+    val title: String,
+    val url: String,
+    val author: String?,
+    val published: Long,
+    val summaryHtml: String,
+    val imageUrl: String?,
+    val unread: Boolean,
+    val starred: Boolean,
+    val category: String,
+)
+
 @Dao
 interface FeedDao {
 
@@ -75,6 +91,22 @@ interface ArticleDao {
 
     @Query("SELECT * FROM articles WHERE unread = 1 ORDER BY published DESC LIMIT :n")
     suspend fun latestUnread(n: Int): List<ArticleEntity>
+
+    /** Neueste ungelesene Artikel mit Feed-Kategorie (fürs Widget). */
+    @Query(
+        """SELECT a.id, a.feedId, a.feedTitle, a.title, a.url, a.author, a.published,
+                  a.summaryHtml, a.imageUrl, a.unread, a.starred,
+                  COALESCE(f.category, a.feedTitle) AS category
+           FROM articles a
+           LEFT JOIN feeds f ON f.id = a.feedId
+           WHERE a.unread = 1
+           ORDER BY a.published DESC
+           LIMIT :n"""
+    )
+    suspend fun latestUnreadWithCategory(n: Int): List<WidgetArticleRow>
+
+    @Query("UPDATE articles SET unread = 0 WHERE unread = 1 AND starred = 0")
+    suspend fun markAllRead(): Int
 
     @Query("SELECT * FROM articles WHERE id = :id")
     suspend fun byId(id: String): ArticleEntity?

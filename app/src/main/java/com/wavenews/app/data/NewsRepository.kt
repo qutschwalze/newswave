@@ -5,6 +5,7 @@ import com.wavenews.app.data.api.GoogleReaderApi
 import com.wavenews.app.data.db.AppDatabase
 import com.wavenews.app.data.db.ArticleEntity
 import com.wavenews.app.data.db.FeedEntity
+import com.wavenews.app.data.db.WidgetArticleRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -48,6 +49,23 @@ class NewsRepository(
     suspend fun unreadCount(): Int = db.articleDao().countUnread()
 
     suspend fun latestUnread(n: Int): List<ArticleEntity> = db.articleDao().latestUnread(n)
+
+    /** Neueste ungelesene Artikel mit Kategorie (fürs Widget). */
+    suspend fun latestUnreadWithCategory(n: Int): List<WidgetArticleRow> = db.articleDao().latestUnreadWithCategory(n)
+
+    /** Alle ungelesenen Artikel als gelesen markieren (lokal + FreshRSS). */
+    suspend fun markAllRead() {
+        val unread = db.articleDao().latestUnread(500)
+        if (unread.isEmpty()) return
+        try {
+            val (api, auth) = client()
+            val token = api.requestToken(auth).string().trim()
+            api.editTag(auth, unread.map { it.id }, addTag = TAG_READ, token = token)
+        } catch (_: Exception) {
+            // Offline: lokalen Stand trotzdem aktualisieren; nächster Sync gleicht ab
+        }
+        db.articleDao().markAllRead()
+    }
 
     suspend fun article(id: String): ArticleEntity? = db.articleDao().byId(id)
 
